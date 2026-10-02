@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using AvatarRecipe.Editor.Core.Models;
 using UnityEditor;
 using UnityEngine;
@@ -51,6 +52,7 @@ namespace AvatarRecipe.Editor.Core.Snapshot
                 });
 
                 AddBlendShapes(snapshot, transform, path);
+                AddMaterials(snapshot, transform, path);
                 transforms.Add(transform);
 
                 for (var index = transform.childCount - 1; index >= 0; index--)
@@ -62,6 +64,13 @@ namespace AvatarRecipe.Editor.Core.Snapshot
             snapshot.transforms.Sort((left, right) => StringComparer.Ordinal.Compare(left.path, right.path));
             snapshot.activeStates.Sort((left, right) => StringComparer.Ordinal.Compare(left.path, right.path));
             snapshot.blendShapes.Sort(CompareBlendShapes);
+            snapshot.materials.Sort((left, right) =>
+            {
+                var pathResult = StringComparer.Ordinal.Compare(left.target.path, right.target.path);
+                if (pathResult != 0) return pathResult;
+                var componentResult = StringComparer.Ordinal.Compare(left.target.componentId, right.target.componentId);
+                return componentResult != 0 ? componentResult : left.materialIndex.CompareTo(right.materialIndex);
+            });
             return snapshot;
         }
 
@@ -135,6 +144,9 @@ namespace AvatarRecipe.Editor.Core.Snapshot
             return new Vector3Value(Normalize(value.x), Normalize(value.y), Normalize(value.z));
         }
 
+        internal static Vector4Value Normalize(Vector4Value value) => new Vector4Value(
+            Normalize(value.x), Normalize(value.y), Normalize(value.z), Normalize(value.w));
+
         internal static QuaternionValue Normalize(Quaternion value)
         {
             var magnitudeSquared = (double)value.x * value.x + (double)value.y * value.y +
@@ -199,6 +211,98 @@ namespace AvatarRecipe.Editor.Core.Snapshot
                     });
                 }
             }
+        }
+
+        private static void AddMaterials(AvatarSnapshot snapshot, Transform transform, string path)
+        {
+            var renderers = transform.GetComponents<Renderer>();
+            for (var rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+            {
+                var renderer = renderers[rendererIndex];
+                if (renderer == null) continue;
+                var materials = renderer.sharedMaterials;
+                for (var materialIndex = 0; materialIndex < materials.Length; materialIndex++)
+                {
+                    var material = materials[materialIndex];
+                    var item = new MaterialSlotSnapshot
+                    {
+                        target = new TargetLocator
+                        {
+                            scope = TargetLocator.BaseScope,
+                            path = path,
+                            componentId = "Renderer:" + rendererIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        },
+                        materialIndex = materialIndex,
+                        hasMaterial = material != null,
+                        hasShader = material != null && material.shader != null,
+                        material = GetAssetReference(material),
+                        shader = material == null ? null : GetAssetReference(material.shader),
+                        renderQueue = material == null ? -1 : material.renderQueue,
+                        shaderKeywords = material == null ? Array.Empty<string>() : material.shaderKeywords.OrderBy(item => item, StringComparer.Ordinal).ToArray()
+                    };
+                    if (material != null && material.shader != null)
+                        item.properties = CaptureMaterialProperties(material);
+                    snapshot.materials.Add(item);
+                }
+            }
+        }
+
+        private static List<MaterialPropertySnapshot> CaptureMaterialProperties(Material material)
+        {
+            var result = new List<MaterialPropertySnapshot>();
+            var shader = material.shader;
+            var count = ShaderUtil.GetPropertyCount(shader);
+            for (var index = 0; index < count; index++)
+            {
+                var name = ShaderUtil.GetPropertyName(shader, index);
+                var property = new MaterialPropertySnapshot { name = name };
+                switch (ShaderUtil.GetPropertyType(shader, index))
+                {
+                    case ShaderUtil.ShaderPropertyType.Float:
+                    case ShaderUtil.ShaderPropertyType.Range:
+                        property.type = "float";
+                        property.floatValue = Normalize(material.GetFloat(name));
+                        break;
+                    case ShaderUtil.ShaderPropertyType.Color:
+                        var color = material.GetColor(name);
+                        property.type = "color";
+                        property.vectorValue = Normalize(new Vector4Value(color.r, color.g, color.b, color.a));
+                        break;
+                    case ShaderUtil.ShaderPropertyType.Vector:
+                        var vector = material.GetVector(name);
+                        property.type = "vector";
+                        property.vectorValue = Normalize(new Vector4Value(vector.x, vector.y, vector.z, vector.w));
+                        break;
+                    case ShaderUtil.ShaderPropertyType.TexEnv:
+                        property.type = "texture";
+                        var texture = material.GetTexture(name);
+                        property.hasTexture = texture != null;
+                        property.texture = GetAssetReference(texture);
+                        var scale = material.GetTextureScale(name);
+                        var offset = material.GetTextureOffset(name);
+                        property.textureScale = Normalize(new Vector4Value(scale.x, scale.y, 0f, 0f));
+                        property.textureOffset = Normalize(new Vector4Value(offset.x, offset.y, 0f, 0f));
+                        break;
+                    default:
+                        continue;
+                }
+                result.Add(property);
+            }
+            result.Sort((left, right) => StringComparer.Ordinal.Compare(left.name, right.name));
+            return result;
+        }
+
+        private static AssetReference GetAssetReference(UnityEngine.Object asset)
+        {
+            if (asset == null) return null;
+            var path = AssetDatabase.GetAssetPath(asset);
+            if (string.IsNullOrEmpty(path)) return null;
+            return new AssetReference
+            {
+                name = asset.name,
+                guid = AssetDatabase.AssetPathToGUID(path),
+                assetPath = path.Replace('\\', '/')
+            };
         }
 
         private static int CompareBlendShapes(BlendShapeSnapshot left, BlendShapeSnapshot right)

@@ -236,8 +236,8 @@ namespace AvatarRecipe.Editor.UI
                     {
                         var state = ExistingAvatarScanner.ScanAndStartTracking(_modifiedAvatar, _originalAvatarPrefab);
                         _statusType = state.manualReview.Count == 0 ? MessageType.Info : MessageType.Warning;
-                        _statusMessage = AvatarRecipeLocalization.Format("Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), and {3} Active State change(s). Save the scene to write the Recipe.",
-                            state.addedPrefabs.Count, state.transformChanges.Count, state.blendShapeChanges.Count, state.activeStateChanges.Count);
+                        _statusMessage = AvatarRecipeLocalization.Format("Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), {3} Active State change(s), and {4} Material change(s). Save the scene to write the Recipe.",
+                            state.addedPrefabs.Count, state.transformChanges.Count, state.blendShapeChanges.Count, state.activeStateChanges.Count, state.materialChanges.Count);
                         if (state.manualReview.Count > 0)
                         {
                             _statusMessage += "\n" + AvatarRecipeLocalization.Get("Manual Review") + ":\n- " + string.Join("\n- ", state.manualReview);

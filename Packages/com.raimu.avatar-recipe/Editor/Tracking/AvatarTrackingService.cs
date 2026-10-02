@@ -186,6 +186,18 @@ namespace AvatarRecipe.Editor.Tracking
                     UpgradeLegacyPrefabBaseline(cache);
                 }
 
+                if (cache.snapshot.schemaVersion == 1)
+                {
+                    cache.snapshot.materials = new List<MaterialSlotSnapshot>();
+                    cache.snapshot.schemaVersion = AvatarSnapshot.CurrentSchemaVersion;
+                    WriteBaseline(reference, cache.snapshot, cache.baseAvatar ?? GetBaseAvatarReference(_root));
+                }
+                else if (cache.snapshot.schemaVersion != AvatarSnapshot.CurrentSchemaVersion)
+                {
+                    throw new InvalidDataException("Local baseline uses an unsupported AvatarSnapshot schema.");
+                }
+                if (cache.snapshot.materials == null) cache.snapshot.materials = new List<MaterialSlotSnapshot>();
+
                 _baseline = cache.snapshot;
                 _baseAvatarOverride = cache.baseAvatar ?? GetBaseAvatarReference(_root);
                 _error = string.Empty;
@@ -324,7 +336,8 @@ namespace AvatarRecipe.Editor.Tracking
                 foreach (var modification in modifications)
                 {
                     var target = modification.currentValue != null ? modification.currentValue.target : null;
-                    if (target is Component component && IsUnderRoot(component.transform) ||
+                    if (target is Material material && IsMaterialUsedByAvatar(material) ||
+                        target is Component component && IsUnderRoot(component.transform) ||
                         target is GameObject gameObject && IsUnderRoot(gameObject.transform))
                     {
                         MarkDirty();
@@ -334,6 +347,78 @@ namespace AvatarRecipe.Editor.Tracking
             }
             return modifications;
         }
+
+        internal static void NotifyAssetsChanged(IEnumerable<string> changedPaths)
+        {
+            if (!IsTracking || _root == null || changedPaths == null) return;
+            var changed = new HashSet<string>(changedPaths.Select(NormalizeAssetPath), StringComparer.OrdinalIgnoreCase);
+            if (HasTrackedAssetChanges(changed)) MarkDirty();
+        }
+
+        internal static void OnAssetsWillSave(string[] paths)
+        {
+            if (!IsTracking || _root == null || paths == null || paths.Length == 0) return;
+            var changed = new HashSet<string>(paths.Select(NormalizeAssetPath), StringComparer.OrdinalIgnoreCase);
+            if (!HasTrackedAssetChanges(changed)) return;
+
+            MarkDirty();
+            // Material and Shader assets can be saved without dirtying their scene. In that case,
+            // persist the Recipe during this Unity save. If the scene is also dirty, its normal
+            // sceneSaved callback will write both scene and Material changes together.
+            if (!_root.scene.isDirty) OnSceneSaved(_root.scene);
+        }
+
+        private static bool HasTrackedAssetChanges(HashSet<string> changed)
+        {
+            if (changed == null || changed.Count == 0) return false;
+            foreach (var slot in _baseline.materials ?? new List<MaterialSlotSnapshot>())
+                if (HasChangedAsset(slot, changed)) return true;
+            foreach (var renderer in _root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null) continue;
+                foreach (var material in renderer.sharedMaterials)
+                    if (HasChangedAsset(material, changed)) return true;
+            }
+            return false;
+        }
+
+        private static bool IsMaterialUsedByAvatar(Material material)
+        {
+            if (material == null || _root == null) return false;
+            foreach (var renderer in _root.GetComponentsInChildren<Renderer>(true))
+                if (renderer != null && renderer.sharedMaterials.Contains(material)) return true;
+            return false;
+        }
+
+        private static bool HasChangedAsset(MaterialSlotSnapshot slot, HashSet<string> changed)
+        {
+            return slot != null && (ReferenceMatchesChanged(slot.material, changed) || ReferenceMatchesChanged(slot.shader, changed) ||
+                (slot.properties ?? new List<MaterialPropertySnapshot>()).Any(property => ReferenceMatchesChanged(property.texture, changed)));
+        }
+
+        private static bool HasChangedAsset(Material material, HashSet<string> changed)
+        {
+            if (material == null) return false;
+            if (PathMatchesChanged(material, changed) || PathMatchesChanged(material.shader, changed)) return true;
+            if (material.shader == null) return false;
+            var count = ShaderUtil.GetPropertyCount(material.shader);
+            for (var index = 0; index < count; index++)
+                if (ShaderUtil.GetPropertyType(material.shader, index) == ShaderUtil.ShaderPropertyType.TexEnv &&
+                    PathMatchesChanged(material.GetTexture(ShaderUtil.GetPropertyName(material.shader, index)), changed)) return true;
+            return false;
+        }
+
+        private static bool ReferenceMatchesChanged(AssetReference reference, HashSet<string> changed) =>
+            reference != null && changed.Contains(NormalizeAssetPath(reference.assetPath));
+
+        private static bool PathMatchesChanged(UnityEngine.Object asset, HashSet<string> changed)
+        {
+            if (asset == null) return false;
+            var path = AssetDatabase.GetAssetPath(asset);
+            return !string.IsNullOrEmpty(path) && changed.Contains(NormalizeAssetPath(path));
+        }
+
+        private static string NormalizeAssetPath(string path) => (path ?? string.Empty).Replace('\\', '/');
 
         private static void OnHierarchyChanged()
         {
@@ -488,6 +573,27 @@ namespace AvatarRecipe.Editor.Tracking
         }
     }
 
+    internal sealed class AvatarRecipeAssetPostprocessor : AssetPostprocessor
+    {
+        public static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets,
+            string[] movedAssets, string[] movedFromAssetPaths)
+        {
+            AvatarTrackingService.NotifyAssetsChanged((importedAssets ?? Array.Empty<string>())
+                .Concat(deletedAssets ?? Array.Empty<string>())
+                .Concat(movedAssets ?? Array.Empty<string>())
+                .Concat(movedFromAssetPaths ?? Array.Empty<string>()));
+        }
+    }
+
+    internal sealed class AvatarRecipeAssetSaveProcessor : AssetModificationProcessor
+    {
+        public static string[] OnWillSaveAssets(string[] paths)
+        {
+            AvatarTrackingService.OnAssetsWillSave(paths);
+            return paths;
+        }
+    }
+
     [Serializable]
     internal sealed class BaseAvatarReference
     {
@@ -567,6 +673,8 @@ namespace AvatarRecipe.Editor.Tracking
                             ", \"name\": " + Json(change.name) + ", \"baseline\": " + Number(change.baseline) +
                             ", \"value\": " + Number(change.value) + "}");
             }
+            foreach (var change in state.materialChanges ?? new List<MaterialChange>())
+                changes.Add("    " + SerializeMaterialChange(change));
             foreach (var change in state.activeStateChanges)
             {
                 changes.Add("    {\"kind\": \"activeState\", \"target\": " + Target(change.target) +
@@ -618,6 +726,30 @@ namespace AvatarRecipe.Editor.Tracking
                     .Append(Markdown(change.name)).Append("`: `").Append(Number(change.baseline)).Append("` → `")
                     .Append(Number(change.value)).Append("`\n");
             }
+            builder.Append("\n## Material and Shader Changes\n\n");
+            foreach (var change in (state.materialChanges ?? new List<MaterialChange>())
+                         .OrderBy(item => item.target.path, StringComparer.Ordinal)
+                         .ThenBy(item => item.target.componentId, StringComparer.Ordinal)
+                         .ThenBy(item => item.materialIndex))
+            {
+                builder.Append("- `").Append(Markdown(change.target.path)).Append("` / `")
+                    .Append(Markdown(change.target.componentId)).Append("` material slot `")
+                    .Append(change.materialIndex.ToString(CultureInfo.InvariantCulture)).Append("`: `")
+                    .Append(Markdown(change.baselineMaterial == null ? "None" : change.baselineMaterial.assetPath)).Append("` → `")
+                    .Append(Markdown(change.valueMaterial == null ? "None" : change.valueMaterial.assetPath)).Append("`\n");
+                if (change.baselineShader != null || change.valueShader != null)
+                    builder.Append("  - Shader: `").Append(Markdown(change.baselineShader == null ? "None" : change.baselineShader.assetPath))
+                        .Append("` → `").Append(Markdown(change.valueShader == null ? "None" : change.valueShader.assetPath)).Append("`\n");
+                if (change.baselineRenderQueue != change.valueRenderQueue)
+                    builder.Append("  - Render Queue: `").Append(change.baselineRenderQueue).Append("` → `").Append(change.valueRenderQueue).Append("`\n");
+                if (!(change.baselineShaderKeywords ?? Array.Empty<string>()).SequenceEqual(change.valueShaderKeywords ?? Array.Empty<string>(), StringComparer.Ordinal))
+                    builder.Append("  - Shader Keywords: `").Append(Markdown(string.Join(", ", change.baselineShaderKeywords ?? Array.Empty<string>()))).Append("` → `")
+                        .Append(Markdown(string.Join(", ", change.valueShaderKeywords ?? Array.Empty<string>()))).Append("`\n");
+                foreach (var property in change.properties ?? new List<MaterialPropertyChange>())
+                    builder.Append("  - `").Append(Markdown(property.name)).Append("` (").Append(Markdown(property.type)).Append("): `")
+                        .Append(Markdown(DescribeMaterialProperty(property.baselineExists ? property.baseline : null)))
+                        .Append("` → `").Append(Markdown(DescribeMaterialProperty(property.valueExists ? property.value : null))).Append("`\n");
+            }
             builder.Append("\n## Active State Changes\n\n");
             foreach (var change in state.activeStateChanges
                          .OrderBy(item => item.target.path, StringComparer.Ordinal))
@@ -661,7 +793,64 @@ namespace AvatarRecipe.Editor.Tracking
             return "{\"scope\": " + Json(target.scope) + ", \"path\": " + Json(target.path) +
                    (string.IsNullOrEmpty(target.componentId) ? "}" : ", \"componentId\": " + Json(target.componentId) + "}");
         }
+
+        private static string SerializeMaterialChange(MaterialChange change)
+        {
+            var properties = (change.properties ?? new List<MaterialPropertyChange>())
+                .OrderBy(item => item.name, StringComparer.Ordinal).ToList();
+            var builder = new StringBuilder("{\"kind\": \"material\", \"target\": ")
+                .Append(Target(change.target))
+                .Append(", \"materialIndex\": ").Append(change.materialIndex.ToString(CultureInfo.InvariantCulture))
+                .Append(", \"baselineMaterial\": ").Append(Asset(change.baselineMaterial))
+                .Append(", \"valueMaterial\": ").Append(Asset(change.valueMaterial))
+                .Append(", \"baselineShader\": ").Append(Asset(change.baselineShader))
+                .Append(", \"valueShader\": ").Append(Asset(change.valueShader))
+                .Append(", \"baselineRenderQueue\": ").Append(change.baselineRenderQueue.ToString(CultureInfo.InvariantCulture))
+                .Append(", \"valueRenderQueue\": ").Append(change.valueRenderQueue.ToString(CultureInfo.InvariantCulture))
+                .Append(", \"baselineShaderKeywords\": ").Append(StringArray(change.baselineShaderKeywords))
+                .Append(", \"valueShaderKeywords\": ").Append(StringArray(change.valueShaderKeywords))
+                .Append(", \"properties\": [");
+            for (var index = 0; index < properties.Count; index++)
+            {
+                var property = properties[index];
+                if (index > 0) builder.Append(", ");
+                builder.Append("{\"name\": ").Append(Json(property.name))
+                    .Append(", \"type\": ").Append(Json(property.type))
+                    .Append(", \"baselineExists\": ").Append(property.baselineExists ? "true" : "false")
+                    .Append(", \"valueExists\": ").Append(property.valueExists ? "true" : "false")
+                    .Append(", \"baseline\": ").Append(MaterialProperty(property.baselineExists ? property.baseline : null))
+                    .Append(", \"value\": ").Append(MaterialProperty(property.valueExists ? property.value : null)).Append("}");
+            }
+            return builder.Append("]}").ToString();
+        }
+
+        private static string Asset(AssetReference asset) => asset == null ? "null" :
+            "{\"name\": " + Json(asset.name) + ", \"guid\": " + Json(asset.guid) + ", \"assetPath\": " + Json(asset.assetPath) + "}";
+
+        private static string StringArray(IEnumerable<string> values) => "[" + string.Join(", ",
+            (values ?? Array.Empty<string>()).OrderBy(item => item, StringComparer.Ordinal).Select(Json)) + "]";
+
+        private static string MaterialProperty(MaterialPropertySnapshot property)
+        {
+            if (property == null) return "null";
+            var builder = new StringBuilder("{\"type\": ").Append(Json(property.type));
+            if (property.type == "float") builder.Append(", \"float\": ").Append(Number(property.floatValue));
+            else if (property.type == "color" || property.type == "vector") builder.Append(", \"vector\": ").Append(Vector(property.vectorValue));
+            else if (property.type == "texture") builder.Append(", \"hasTexture\": ").Append(property.hasTexture ? "true" : "false")
+                .Append(", \"texture\": ").Append(Asset(property.texture))
+                .Append(", \"scale\": ").Append(Vector(property.textureScale)).Append(", \"offset\": ").Append(Vector(property.textureOffset));
+            return builder.Append("}").ToString();
+        }
+
+        private static string DescribeMaterialProperty(MaterialPropertySnapshot property)
+        {
+            if (property == null) return "Not present";
+            if (property.type == "float") return Number(property.floatValue);
+            if (property.type == "color" || property.type == "vector") return Vector(property.vectorValue);
+            return !property.hasTexture ? "None" : property.texture == null ? "Non-asset Texture" : property.texture.assetPath;
+        }
         private static string Vector(Vector3Value value) => "[" + Number(value.x) + ", " + Number(value.y) + ", " + Number(value.z) + "]";
+        private static string Vector(Vector4Value value) => "[" + Number(value.x) + ", " + Number(value.y) + ", " + Number(value.z) + ", " + Number(value.w) + "]";
         private static string Quaternion(QuaternionValue value) => "[" + Number(value.x) + ", " + Number(value.y) + ", " + Number(value.z) + ", " + Number(value.w) + "]";
         private static string Number(float value) => value.ToString("0.#####", CultureInfo.InvariantCulture);
         private static string Markdown(string value) => (value ?? string.Empty).Replace("`", "\\`").Replace("\r", " ").Replace("\n", " ");

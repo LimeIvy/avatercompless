@@ -39,7 +39,7 @@ namespace AvatarRecipe.Editor.Apply
             }
 
             var schemaVersion = Integer(document, "schemaVersion");
-            if (schemaVersion != RecipeState.CurrentSchemaVersion)
+            if (schemaVersion < 1 || schemaVersion > RecipeState.CurrentSchemaVersion)
                 throw new InvalidDataException("Unsupported Recipe schema version " + schemaVersion +
                     ". This package supports version " + RecipeState.CurrentSchemaVersion +
                     "; update Avatar Recipe or migrate the Recipe explicitly.");
@@ -53,7 +53,7 @@ namespace AvatarRecipe.Editor.Apply
             };
             if (string.IsNullOrEmpty(baseAvatar.name)) throw new InvalidDataException("Recipe is missing baseAvatar metadata.");
 
-            var state = new RecipeState();
+            var state = new RecipeState { schemaVersion = RecipeState.CurrentSchemaVersion };
             var prefabValues = Array(document, "prefabs");
             for (var index = 0; index < prefabValues.Count; index++)
             {
@@ -141,10 +141,89 @@ namespace AvatarRecipe.Editor.Apply
                         value = Boolean(change, "value")
                     });
                     break;
+                case "material":
+                    state.materialChanges.Add(ReadMaterialChange(change));
+                    break;
                 default:
                     state.manualReview.Add("Unsupported Recipe change kind requires manual review: " + kind);
                     break;
             }
+        }
+
+        private static MaterialChange ReadMaterialChange(Dictionary<string, object> value)
+        {
+            var result = new MaterialChange
+            {
+                target = ReadTarget(Object(value, "target")),
+                materialIndex = Integer(value, "materialIndex"),
+                baselineMaterial = ReadAssetReference(value, "baselineMaterial"),
+                valueMaterial = ReadAssetReference(value, "valueMaterial"),
+                baselineShader = ReadAssetReference(value, "baselineShader"),
+                valueShader = ReadAssetReference(value, "valueShader"),
+                baselineRenderQueue = Integer(value, "baselineRenderQueue"),
+                valueRenderQueue = Integer(value, "valueRenderQueue"),
+                baselineShaderKeywords = StringArray(value, "baselineShaderKeywords"),
+                valueShaderKeywords = StringArray(value, "valueShaderKeywords")
+            };
+            var properties = Array(value, "properties");
+            foreach (var item in properties)
+            {
+                var property = AsObject(item, "material property change");
+                var baselineExists = Boolean(property, "baselineExists");
+                var valueExists = Boolean(property, "valueExists");
+                result.properties.Add(new MaterialPropertyChange
+                {
+                    name = String(property, "name"),
+                    type = String(property, "type"),
+                    baselineExists = baselineExists,
+                    valueExists = valueExists,
+                    baseline = baselineExists ? ReadMaterialProperty(Object(property, "baseline")) : null,
+                    value = valueExists ? ReadMaterialProperty(Object(property, "value")) : null
+                });
+            }
+            return result;
+        }
+
+        private static MaterialPropertySnapshot ReadMaterialProperty(Dictionary<string, object> value)
+        {
+            var type = String(value, "type");
+            var result = new MaterialPropertySnapshot { type = type };
+            switch (type)
+            {
+                case "float": result.floatValue = Number(value, "float"); break;
+                case "color":
+                case "vector": result.vectorValue = Vector4(value, "vector"); break;
+                case "texture":
+                    result.hasTexture = Boolean(value, "hasTexture");
+                    result.texture = ReadAssetReference(value, "texture");
+                    result.textureScale = Vector4(value, "scale");
+                    result.textureOffset = Vector4(value, "offset");
+                    break;
+                default: throw new InvalidDataException("Recipe contains an unsupported Material property type: " + type);
+            }
+            return result;
+        }
+
+        private static AssetReference ReadAssetReference(Dictionary<string, object> value, string key)
+        {
+            if (!value.TryGetValue(key, out var field) || field == null) return null;
+            var item = field as Dictionary<string, object> ?? throw new InvalidDataException("Recipe contains an invalid asset reference: " + key);
+            return new AssetReference
+            {
+                name = String(item, "name"),
+                guid = String(item, "guid"),
+                assetPath = String(item, "assetPath")
+            };
+        }
+
+        private static string[] StringArray(Dictionary<string, object> value, string key)
+        {
+            var items = Array(value, key);
+            var result = new List<string>(items.Count);
+            foreach (var item in items)
+                if (item is string entry) result.Add(entry);
+                else throw new InvalidDataException("Recipe array contains a non-string value: " + key);
+            return result.ToArray();
         }
 
         private static TargetLocator ReadTarget(Dictionary<string, object> value) => new TargetLocator
@@ -177,6 +256,22 @@ namespace AvatarRecipe.Editor.Apply
                     throw new InvalidDataException("Recipe contains an invalid BlendShape change.");
             foreach (var change in state.activeStateChanges)
                 if (change == null || !IsBaseTarget(change.target)) throw new InvalidDataException("Recipe contains an invalid Active State change.");
+            foreach (var change in state.materialChanges ?? new List<MaterialChange>())
+            {
+                if (change == null || !IsBaseTarget(change.target) || string.IsNullOrEmpty(change.target.componentId) ||
+                    !change.target.componentId.StartsWith("Renderer:", StringComparison.Ordinal) ||
+                    change.materialIndex < 0 || change.properties == null)
+                    throw new InvalidDataException("Recipe contains an invalid Material change.");
+                var propertyNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in change.properties)
+                {
+                    if (property == null || string.IsNullOrEmpty(property.name) || !propertyNames.Add(property.name) ||
+                        (property.type != "float" && property.type != "color" && property.type != "vector" && property.type != "texture") ||
+                        (property.baselineExists && !ValidMaterialProperty(property.baseline)) ||
+                        (property.valueExists && !ValidMaterialProperty(property.value)))
+                        throw new InvalidDataException("Recipe contains an invalid Material property change.");
+                }
+            }
             foreach (var prefab in state.addedPrefabs)
                 if (prefab == null || string.IsNullOrEmpty(prefab.id) || string.IsNullOrEmpty(prefab.guid) ||
                     string.IsNullOrEmpty(prefab.assetPath) || string.IsNullOrEmpty(prefab.name) ||
@@ -237,6 +332,25 @@ namespace AvatarRecipe.Editor.Apply
             var values = value.TryGetValue(key, out var field) ? field as List<object> : null;
             if (values == null || values.Count != 4) throw new InvalidDataException("Recipe field must be a 4-value quaternion: " + key);
             return new QuaternionValue(ToFloat(values[0], key), ToFloat(values[1], key), ToFloat(values[2], key), ToFloat(values[3], key));
+        }
+
+        private static Vector4Value Vector4(Dictionary<string, object> value, string key)
+        {
+            var values = value.TryGetValue(key, out var field) ? field as List<object> : null;
+            if (values == null || values.Count != 4) throw new InvalidDataException("Recipe field must be a 4-value vector: " + key);
+            return new Vector4Value(ToFloat(values[0], key), ToFloat(values[1], key), ToFloat(values[2], key), ToFloat(values[3], key));
+        }
+
+        private static bool ValidMaterialProperty(MaterialPropertySnapshot property)
+        {
+            if (property == null) return false;
+            if (property.type == "float") return Finite(property.floatValue);
+            if (property.type == "color" || property.type == "vector")
+                return Finite(property.vectorValue.x, property.vectorValue.y, property.vectorValue.z, property.vectorValue.w);
+            if (property.type == "texture")
+                return (!property.hasTexture || property.texture != null) &&
+                       Finite(property.textureScale.x, property.textureScale.y, property.textureOffset.x, property.textureOffset.y);
+            return false;
         }
 
         private static float ToFloat(object value, string key) => value is double number

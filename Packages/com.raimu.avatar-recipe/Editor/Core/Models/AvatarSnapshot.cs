@@ -6,11 +6,12 @@ namespace AvatarRecipe.Editor.Core.Models
     [Serializable]
     public sealed class AvatarSnapshot
     {
-        public const int CurrentSchemaVersion = 1;
+        public const int CurrentSchemaVersion = 2;
 
         public int schemaVersion = CurrentSchemaVersion;
         public List<TransformSnapshot> transforms = new List<TransformSnapshot>();
         public List<BlendShapeSnapshot> blendShapes = new List<BlendShapeSnapshot>();
+        public List<MaterialSlotSnapshot> materials = new List<MaterialSlotSnapshot>();
         public List<ActiveSnapshot> activeStates = new List<ActiveSnapshot>();
         public List<AddedPrefabSnapshot> addedPrefabs = new List<AddedPrefabSnapshot>();
     }

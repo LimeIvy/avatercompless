@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using AvatarRecipe.Editor.Core.Models;
 using AvatarRecipe.Editor.Core.Snapshot;
+using AvatarRecipe.Editor.Localization;
 
 namespace AvatarRecipe.Editor.Core.Diff
 {
@@ -30,11 +31,14 @@ namespace AvatarRecipe.Editor.Core.Diff
 
             var baselineBlendShapes = IndexBlendShapes(baseline.blendShapes);
             var currentBlendShapes = IndexBlendShapes(current.blendShapes);
+            var baselineMaterials = IndexMaterials(baseline.materials);
+            var currentMaterials = IndexMaterials(current.materials);
             AddBlendShapeReviewItems(recipeState, baselineBlendShapes, currentBlendShapes, commonTransformPaths);
             baseline = FilterSnapshot(baseline, commonTransformPaths,
                 baselineBlendShapes.Keys.Intersect(currentBlendShapes.Keys).ToHashSet());
             current = FilterSnapshot(current, commonTransformPaths,
                 currentBlendShapes.Keys.Intersect(baselineBlendShapes.Keys).ToHashSet());
+            AddMaterialChanges(recipeState, baselineMaterials, currentMaterials, commonTransformPaths);
 
             foreach (var prefab in addedPrefabs)
             {
@@ -133,7 +137,7 @@ namespace AvatarRecipe.Editor.Core.Diff
                     parameterName);
             }
 
-            if (snapshot.transforms == null || snapshot.blendShapes == null || snapshot.activeStates == null)
+            if (snapshot.transforms == null || snapshot.blendShapes == null || snapshot.activeStates == null || snapshot.materials == null)
             {
                 throw new ArgumentException("AvatarSnapshot contains a missing collection.", parameterName);
             }
@@ -187,6 +191,7 @@ namespace AvatarRecipe.Editor.Core.Diff
                 schemaVersion = snapshot.schemaVersion,
                 transforms = snapshot.transforms.Where(item => !IsWithinAddedPrefab(item.path)).ToList(),
                 blendShapes = snapshot.blendShapes.Where(item => !IsWithinAddedPrefab(item.target.path)).ToList(),
+                materials = snapshot.materials.Where(item => !IsWithinAddedPrefab(item.target.path)).ToList(),
                 activeStates = snapshot.activeStates.Where(item => !IsWithinAddedPrefab(item.path)).ToList(),
                 addedPrefabs = snapshot.addedPrefabs
             };
@@ -221,6 +226,7 @@ namespace AvatarRecipe.Editor.Core.Diff
                 transforms = snapshot.transforms.Where(item => commonPaths.Contains(item.path)).ToList(),
                 activeStates = snapshot.activeStates.Where(item => commonPaths.Contains(item.path)).ToList(),
                 blendShapes = snapshot.blendShapes.Where(item => commonBlendShapes.Contains(new BlendShapeIdentity(item))).ToList(),
+                materials = snapshot.materials.Where(item => commonPaths.Contains(item.target.path)).ToList(),
                 addedPrefabs = snapshot.addedPrefabs
             };
         }
@@ -325,6 +331,206 @@ namespace AvatarRecipe.Editor.Core.Diff
 
             return result;
         }
+
+        private static Dictionary<string, MaterialSlotSnapshot> IndexMaterials(IEnumerable<MaterialSlotSnapshot> materials)
+        {
+            var result = new Dictionary<string, MaterialSlotSnapshot>(StringComparer.Ordinal);
+            foreach (var material in materials)
+            {
+                if (material == null || material.target == null || material.target.scope != TargetLocator.BaseScope ||
+                    material.target.path == null || string.IsNullOrEmpty(material.target.componentId) || material.materialIndex < 0 ||
+                    !result.TryAdd(MaterialSlotKey(material.target, material.materialIndex), material))
+                    throw new ArgumentException("AvatarSnapshot contains an invalid or duplicate material slot.");
+            }
+            return result;
+        }
+
+        private static void AddMaterialChanges(RecipeState state,
+            Dictionary<string, MaterialSlotSnapshot> baseline, Dictionary<string, MaterialSlotSnapshot> current,
+            HashSet<string> commonPaths)
+        {
+            var keys = new HashSet<string>(baseline.Keys, StringComparer.Ordinal);
+            keys.UnionWith(current.Keys);
+            foreach (var key in keys.OrderBy(item => item, StringComparer.Ordinal))
+            {
+                baseline.TryGetValue(key, out var before);
+                current.TryGetValue(key, out var after);
+                var target = before != null ? before.target : after.target;
+                var materialIndex = before != null ? before.materialIndex : after.materialIndex;
+                if (!commonPaths.Contains(target.path)) continue;
+
+                var assignmentChanged = before == null || after == null || before.hasMaterial != after.hasMaterial ||
+                    !SameAsset(before.material, after.material);
+                if (assignmentChanged)
+                {
+                    if (before != null && before.hasMaterial && before.material == null ||
+                        after != null && after.hasMaterial && after.material == null)
+                    {
+                        state.manualReview.Add("Material is not a persistent project asset and cannot be restored automatically: " +
+                                               target.path + " slot " + materialIndex);
+                        continue;
+                    }
+                    state.materialChanges.Add(new MaterialChange
+                    {
+                        target = CopyTarget(target),
+                        materialIndex = materialIndex,
+                        baselineMaterial = CopyAsset(before == null ? null : before.material),
+                        valueMaterial = CopyAsset(after == null ? null : after.material),
+                        baselineShader = CopyAsset(before == null ? null : before.shader),
+                        valueShader = CopyAsset(after == null ? null : after.shader)
+                    });
+                    continue;
+                }
+
+                if (before == null || after == null || !before.hasMaterial) continue;
+                var shaderChanged = before.hasShader != after.hasShader || !SameAsset(before.shader, after.shader);
+                var propertyChanges = DiffMaterialProperties(before.properties, after.properties, out var duplicateProperties);
+                foreach (var propertyName in duplicateProperties)
+                {
+                    state.manualReview.Add(AvatarRecipeLocalization.Format(
+                        "Shader declares duplicate Material property name, skipped: {0} at {1} (slot {2})",
+                        propertyName, target.path, materialIndex));
+                }
+                var materialSettingsChanged = before.renderQueue != after.renderQueue ||
+                    !(before.shaderKeywords ?? Array.Empty<string>()).SequenceEqual(after.shaderKeywords ?? Array.Empty<string>(), StringComparer.Ordinal);
+                if (!shaderChanged && propertyChanges.Count == 0 && !materialSettingsChanged) continue;
+                if (before.material == null || (before.hasShader && before.shader == null) || (after.hasShader && after.shader == null))
+                {
+                    state.manualReview.Add("Material or Shader is not a persistent project asset and cannot be restored automatically: " +
+                                           target.path + " slot " + materialIndex);
+                    continue;
+                }
+                if (propertyChanges.Any(change => change.type == "texture" &&
+                        (change.baselineExists && change.baseline.hasTexture && change.baseline.texture == null ||
+                         change.valueExists && change.value.hasTexture && change.value.texture == null)))
+                {
+                    state.manualReview.Add("Material uses a non-asset texture that cannot be restored automatically: " +
+                                           target.path + " slot " + materialIndex);
+                    continue;
+                }
+
+                state.materialChanges.Add(new MaterialChange
+                {
+                    target = CopyTarget(target),
+                    materialIndex = materialIndex,
+                    baselineMaterial = CopyAsset(before.material),
+                    valueMaterial = CopyAsset(after.material),
+                    baselineShader = CopyAsset(before.shader),
+                    valueShader = CopyAsset(after.shader),
+                    baselineRenderQueue = before.renderQueue,
+                    valueRenderQueue = after.renderQueue,
+                    baselineShaderKeywords = (before.shaderKeywords ?? Array.Empty<string>()).ToArray(),
+                    valueShaderKeywords = (after.shaderKeywords ?? Array.Empty<string>()).ToArray(),
+                    properties = propertyChanges
+                });
+            }
+        }
+
+        private static List<MaterialPropertyChange> DiffMaterialProperties(
+            List<MaterialPropertySnapshot> baseline, List<MaterialPropertySnapshot> current, out List<string> duplicateNames)
+        {
+            var duplicates = new HashSet<string>(StringComparer.Ordinal);
+            var before = IndexMaterialProperties(baseline, duplicates);
+            var after = IndexMaterialProperties(current, duplicates);
+            var allDuplicateNames = duplicates.OrderBy(item => item, StringComparer.Ordinal).ToList();
+            // lilToon deliberately repeats this diagnostic placeholder to display different
+            // recovery messages. It is not an editable Material value and should not become a warning.
+            duplicateNames = allDuplicateNames
+                .Where(item => !string.Equals(item, "_DummyProperty", StringComparison.Ordinal))
+                .ToList();
+            foreach (var duplicateName in allDuplicateNames)
+            {
+                // ShaderUtil can expose repeated declarations for malformed or generated shaders.
+                // A name-only Material API cannot address these safely, so leave them for review.
+                before.Remove(duplicateName);
+                after.Remove(duplicateName);
+            }
+            var result = new List<MaterialPropertyChange>();
+            var names = new HashSet<string>(before.Keys, StringComparer.Ordinal);
+            names.UnionWith(after.Keys);
+            foreach (var name in names.OrderBy(item => item, StringComparer.Ordinal))
+            {
+                before.TryGetValue(name, out var oldValue);
+                after.TryGetValue(name, out var newValue);
+                if (oldValue != null && newValue != null && SamePropertyValue(oldValue, newValue)) continue;
+                result.Add(new MaterialPropertyChange
+                {
+                    name = name,
+                    type = newValue != null ? newValue.type : oldValue.type,
+                    baselineExists = oldValue != null,
+                    valueExists = newValue != null,
+                    baseline = CopyProperty(oldValue),
+                    value = CopyProperty(newValue)
+                });
+            }
+            return result;
+        }
+
+        private static Dictionary<string, MaterialPropertySnapshot> IndexMaterialProperties(
+            IEnumerable<MaterialPropertySnapshot> properties, HashSet<string> duplicateNames)
+        {
+            var result = new Dictionary<string, MaterialPropertySnapshot>(StringComparer.Ordinal);
+            foreach (var property in properties ?? Enumerable.Empty<MaterialPropertySnapshot>())
+            {
+                if (property == null || string.IsNullOrEmpty(property.name))
+                    throw new ArgumentException("AvatarSnapshot contains an invalid Material property.");
+                if (!result.TryAdd(property.name, property)) duplicateNames.Add(property.name);
+            }
+            return result;
+        }
+
+        private static bool SamePropertyValue(MaterialPropertySnapshot left, MaterialPropertySnapshot right)
+        {
+            if (left.type != right.type) return false;
+            switch (left.type)
+            {
+                case "float": return Approximately(left.floatValue, right.floatValue);
+                case "color":
+                case "vector": return left.vectorValue.Equals(right.vectorValue);
+                case "texture": return left.hasTexture == right.hasTexture && SameAsset(left.texture, right.texture) &&
+                    left.textureScale.Equals(right.textureScale) && left.textureOffset.Equals(right.textureOffset);
+                default: return false;
+            }
+        }
+
+        private static bool Approximately(float left, float right) => Math.Abs(left - right) <= 0.00001f;
+
+        private static string MaterialSlotKey(TargetLocator target, int materialIndex) =>
+            target.path + "\n" + target.componentId + "\n" + materialIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        private static bool SameAsset(AssetReference left, AssetReference right)
+        {
+            var leftIsEmpty = IsEmptyAssetReference(left);
+            var rightIsEmpty = IsEmptyAssetReference(right);
+            if (leftIsEmpty || rightIsEmpty) return leftIsEmpty && rightIsEmpty;
+            if (!string.IsNullOrEmpty(left.guid) && !string.IsNullOrEmpty(right.guid))
+                return string.Equals(left.guid, right.guid, StringComparison.Ordinal);
+            return string.Equals(NormalizeAssetPath(left.assetPath), NormalizeAssetPath(right.assetPath), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsEmptyAssetReference(AssetReference asset) => asset == null ||
+            string.IsNullOrEmpty(asset.guid) && string.IsNullOrEmpty(asset.assetPath);
+
+        private static string NormalizeAssetPath(string path) => (path ?? string.Empty).Replace('\\', '/');
+
+        private static AssetReference CopyAsset(AssetReference value) => value == null ? null : new AssetReference
+        {
+            name = value.name,
+            guid = value.guid,
+            assetPath = value.assetPath
+        };
+
+        private static MaterialPropertySnapshot CopyProperty(MaterialPropertySnapshot value) => value == null ? null : new MaterialPropertySnapshot
+        {
+            name = value.name,
+            type = value.type,
+            floatValue = value.floatValue,
+            vectorValue = value.vectorValue,
+            hasTexture = value.hasTexture,
+            texture = CopyAsset(value.texture),
+            textureScale = value.textureScale,
+            textureOffset = value.textureOffset
+        };
 
         private static List<T> SortByPath<T>(List<T> items, Func<T, string> pathSelector)
         {

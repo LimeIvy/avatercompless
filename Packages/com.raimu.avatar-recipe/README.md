@@ -34,7 +34,7 @@ Recipe には差分とアセット参照のみを保存します。元アバタ�
 
 ### English
 
-Avatar Recipe is an Editor-only Unity package for creating and importing avatar change Recipes. To create one, track an Avatar Root to record supported changes from its current state, or scan a modified Avatar against its original Prefab. Save the scene to write the Recipe. To use an existing Recipe, open **Import Recipe**, choose the target Avatar and `state.json`, review the apply plan, then apply it. The UI supports Japanese, English, Simplified Chinese, and Korean; **Auto (System)** follows the Editor's system language.
+Avatar Recipe is an Editor-only Unity package for creating and importing avatar change Recipes. To create one, track an Avatar Root to record supported changes from its current state, or scan a modified Avatar against its original Prefab. Save the scene to write the Recipe; when tracking Material or Shader asset changes, save that asset to write the Recipe if the scene is clean. To use an existing Recipe, open **Import Recipe**, choose the target Avatar and `state.json`, review the apply plan, then apply it. The UI supports Japanese, English, Simplified Chinese, and Korean; **Auto (System)** follows the Editor's system language.
 
 ### 简体中文
 
@@ -46,7 +46,7 @@ Avatar Recipe는 Unity Editor 전용 도구로, 아바타 변경 Recipe를 만�
 
 ## Recipe schema
 
-現在の `state.json` は schema version 1 です。異なる schema version は自動変換せず、対応バージョンを明示したエラーとして扱います。移行方針はリポジトリの `docs/RECIPE_FORMAT.md` を参照してください。
+現在の `state.json` は schema version 2 です。version 1のRecipeは読み込み時に互換移行します。マテリアル差分はアセット参照と変更値のみを保存し、適用時は元アセットを変更せず、アバター専用マテリアルを `Assets/AvatarRecipeGenerated/Materials/` に作成します。移行方針はリポジトリの `docs/RECIPE_FORMAT.md` を参照してください。
 
 ## 開発ドキュメント
 

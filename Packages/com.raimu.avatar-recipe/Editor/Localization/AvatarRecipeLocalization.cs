@@ -41,6 +41,67 @@ namespace AvatarRecipe.Editor.Localization
                 "수정된 아바타를 원본 프리팹과 비교해 차이점으로 Recipe를 만든 뒤 계속 추적합니다. 씬을 저장하면 Recipe를 기록합니다."
             },
             ["Start Scan and Create Recipe"] = new[] { "Start Scan and Create Recipe", "スキャンしてレシピ作成を開始", "开始扫描并创建Recipe", "스캔 후 Recipe 만들기 시작" },
+            ["Material"] = new[] { "Material", "マテリアル", "材质", "머티리얼" },
+            ["Material Slot"] = new[] { "Material Slot", "マテリアルスロット", "材质槽", "머티리얼 슬롯" },
+            ["Material Change"] = new[] { "Material / Shader Change", "マテリアル / シェーダー変更", "材质 / 着色器更改", "머티리얼 / 셰이더 변경" },
+            ["Material already matches the Recipe at {0} (slot {1})"] = new[]
+            {
+                "Material already matches the Recipe at {0} (slot {1})", "{0}（スロット{1}）のマテリアルはすでにRecipeと一致しています。",
+                "{0}（槽位{1}）的材质已与Recipe一致。", "{0}(슬롯 {1}) 머티리얼은 이미 Recipe와 일치합니다."
+            },
+            ["Could not resolve material or shader asset: {0}"] = new[]
+            {
+                "Could not resolve material or shader asset: {0}", "マテリアルまたはシェーダーアセットを特定できません: {0}",
+                "无法解析材质或着色器资源：{0}", "머티리얼 또는 셰이더 에셋을 찾을 수 없습니다: {0}"
+            },
+            ["Current material differs from the Recipe baseline at {0} (slot {1})"] = new[]
+            {
+                "Current material differs from the Recipe baseline at {0} (slot {1})", "{0}（スロット{1}）の現在のマテリアルはRecipeの基準と異なります。",
+                "{0}（槽位{1}）的当前材质与Recipe基线不同。", "{0}(슬롯 {1})의 현재 머티리얼이 Recipe 기준과 다릅니다."
+            },
+            ["Material target found at {0} (slot {1})"] = new[]
+            {
+                "Material target found at {0} (slot {1})", "{0}（スロット{1}）のマテリアルを検出しました。",
+                "已找到{0}（槽位{1}）的材质目标。", "{0}(슬롯 {1}) 머티리얼 대상을 찾았습니다."
+            },
+            ["Generated Material path is occupied by a different asset: {0}"] = new[]
+            {
+                "Generated Material path is occupied by a different asset: {0}", "生成先のマテリアルパスが別のアセットに使われています: {0}",
+                "生成材质路径已被其他资源占用：{0}", "생성할 머티리얼 경로가 다른 에셋에 사용 중입니다: {0}"
+            },
+            ["Slot {0}: {1}"] = new[] { "Slot {0}: {1}", "スロット{0}: {1}", "槽位{0}：{1}", "슬롯 {0}: {1}" },
+            ["Shader: {0}"] = new[] { "Shader: {0}", "シェーダー: {0}", "着色器：{0}", "셰이더: {0}" },
+            ["Changed properties: {0}"] = new[] { "Changed properties: {0}", "変更プロパティ: {0}", "更改的属性：{0}", "변경된 속성: {0}" },
+            ["Render Queue: {0} → {1}"] = new[] { "Render Queue: {0} → {1}", "Render Queue: {0} → {1}", "渲染队列：{0} → {1}", "렌더 큐: {0} → {1}" },
+            ["Shader Keywords: {0} → {1}"] = new[] { "Shader Keywords: {0} → {1}", "シェーダーキーワード: {0} → {1}", "着色器关键字：{0} → {1}", "셰이더 키워드: {0} → {1}" },
+            ["Avatar-specific Material will be generated"] = new[] { "Avatar-specific Material will be generated", "アバター専用マテリアルを生成します", "将生成Avatar专用材质", "아바타 전용 머티리얼을 생성합니다" },
+            ["Material is not a persistent project asset and cannot be restored automatically: {0}"] = new[]
+            {
+                "Material is not a persistent project asset and cannot be restored automatically: {0}", "マテリアルが永続アセットではないため自動復元できません: {0}",
+                "材质不是持久化项目资源，无法自动还原：{0}", "머티리얼이 프로젝트 에셋으로 저장되지 않아 자동으로 복원할 수 없습니다: {0}"
+            },
+            ["Material or Shader is not a persistent project asset and cannot be restored automatically: {0}"] = new[]
+            {
+                "Material or Shader is not a persistent project asset and cannot be restored automatically: {0}", "マテリアルまたはシェーダーが永続アセットではないため自動復元できません: {0}",
+                "材质或着色器不是持久化项目资源，无法自动还原：{0}", "머티리얼 또는 셰이더가 프로젝트 에셋으로 저장되지 않아 자동으로 복원할 수 없습니다: {0}"
+            },
+            ["Material uses a non-asset texture that cannot be restored automatically: {0}"] = new[]
+            {
+                "Material uses a non-asset texture that cannot be restored automatically: {0}", "マテリアルがアセット化されていないテクスチャを使っているため自動復元できません: {0}",
+                "材质使用了非资源纹理，无法自动还原：{0}", "머티리얼이 에셋이 아닌 텍스처를 사용하여 자동으로 복원할 수 없습니다: {0}"
+            },
+            ["Shader declares duplicate Material property name, skipped: {0} at {1} (slot {2})"] = new[]
+            {
+                "Shader declares duplicate Material property name, skipped: {0} at {1} (slot {2})",
+                "シェーダー内でマテリアルプロパティ名が重複しているため追跡をスキップしました: {0} 場所 {1}（スロット {2}）",
+                "着色器中存在重复的材质属性名，已跳过：{0}，位置 {1}（槽位 {2}）",
+                "셰이더에 중복된 머티리얼 속성 이름이 있어 추적을 건너뛰었습니다: {0}, 위치 {1}(슬롯 {2})"
+            },
+            ["Slot {0}: {1} (creates an Avatar-specific Material asset)"] = new[]
+            {
+                "Slot {0}: {1} (creates an Avatar-specific Material asset)", "スロット{0}: {1}（アバター専用マテリアルを作成）",
+                "槽位{0}：{1}（将创建Avatar专用材质资源）", "슬롯 {0}: {1}(아바타 전용 머티리얼 에셋 생성)"
+            },
             ["Recipe state.json path is required."] = new[] { "Recipe state.json path is required.", "Recipe state.jsonのパスを指定してください。", "必须指定Recipe state.json路径。", "Recipe state.json 경로를 입력하세요." },
             ["Recipe state.json was not found."] = new[] { "Recipe state.json was not found.", "Recipe state.jsonが見つかりません。", "找不到Recipe state.json。", "Recipe state.json을 찾을 수 없습니다." },
             ["Recipe state.json is invalid: {0}"] = new[] { "Recipe state.json is invalid: {0}", "Recipe state.jsonが不正です: {0}", "Recipe state.json无效：{0}", "Recipe state.json이 올바르지 않습니다: {0}" },
@@ -231,12 +292,12 @@ namespace AvatarRecipe.Editor.Localization
                 "已应用{0}项操作，跳过{1}项冲突，尚有{2}项需手动检查。保存场景以保留更改。一次撤销即可还原本次应用。",
                 "작업 {0}개를 적용했습니다. 충돌 {1}개를 건너뛰었고 수동 검토 항목 {2}개가 남았습니다. 변경 사항을 유지하려면 씬을 저장하세요. Undo 한 번으로 전체 적용을 되돌릴 수 있습니다."
             },
-            ["Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), and {3} Active State change(s). Save the scene to write the Recipe."] = new[]
+            ["Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), {3} Active State change(s), and {4} Material change(s). Save the scene to write the Recipe."] = new[]
             {
-                "Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), and {3} Active State change(s). Save the scene to write the Recipe.",
-                "スキャンを開始しました。追加Prefab {0}件、Transform変更 {1}件、BlendShape変更 {2}件、Active State変更 {3}件です。シーンを保存するとRecipeが書き出されます。",
-                "扫描已初始化：新增预制件{0}个、Transform更改{1}项、BlendShape更改{2}项、启用状态更改{3}项。保存场景以写入Recipe。",
-                "스캔을 시작했습니다. 추가 프리팹 {0}개, Transform 변경 {1}개, BlendShape 변경 {2}개, 활성 상태 변경 {3}개입니다. 씬을 저장하면 Recipe가 기록됩니다."
+                "Scan initialized with {0} added Prefab(s), {1} Transform change(s), {2} BlendShape change(s), {3} Active State change(s), and {4} Material change(s). Save the scene to write the Recipe.",
+                "スキャンを開始しました。追加Prefab {0}件、Transform変更 {1}件、BlendShape変更 {2}件、Active State変更 {3}件、マテリアル変更 {4}件です。シーンを保存するとRecipeが書き出されます。",
+                "扫描已初始化：新增预制件{0}个、Transform更改{1}项、BlendShape更改{2}项、启用状态更改{3}项、材质更改{4}项。保存场景以写入Recipe。",
+                "스캔을 시작했습니다. 추가 프리팹 {0}개, Transform 변경 {1}개, BlendShape 변경 {2}개, 활성 상태 변경 {3}개, 머티리얼 변경 {4}개입니다. 씬을 저장하면 Recipe가 기록됩니다."
             },
             ["{0} conflict(s) were found. Apply Anyway overwrites conflicting values. Skip Conflicts leaves conflicting values unchanged. Manual Review items are always skipped."] = new[]
             {

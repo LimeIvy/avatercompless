@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using AvatarRecipe.Editor.Core.Models;
 using UnityEditor;
@@ -45,6 +46,16 @@ namespace AvatarRecipe.Editor.Apply
             public int index;
         }
 
+        private sealed class PreparedMaterial
+        {
+            public PlannedOperation operation;
+            public MaterialChange change;
+            public Renderer renderer;
+            public Material valueMaterial;
+            public Shader valueShader;
+            public string variantPath;
+        }
+
         public static ApplyResult Apply(LoadedRecipe recipe, GameObject target, ApplyPlan plan, bool skipConflicts)
         {
             if (recipe == null || recipe.state == null) throw new ArgumentNullException(nameof(recipe));
@@ -67,6 +78,7 @@ namespace AvatarRecipe.Editor.Apply
             var transforms = new List<PreparedTransform>();
             var activeStates = new List<PreparedActive>();
             var blendShapes = new List<PreparedBlendShape>();
+            var materials = new List<PreparedMaterial>();
 
             if (!skipAllBaseOperations)
             {
@@ -108,6 +120,22 @@ namespace AvatarRecipe.Editor.Apply
                     var renderer = ResolveBlendShape(resolved, change, out var index);
                     if (renderer == null) throw ChangedTarget(change.target.path + "/" + change.name);
                     blendShapes.Add(new PreparedBlendShape { change = change, renderer = renderer, index = index });
+                }
+                foreach (var operation in plan.operations.Where(item => item.materialChange != null))
+                {
+                    if (skipConflicts && conflicts.Contains(operation.changeKey)) { result.skippedConflicts++; continue; }
+                    if (operation.renderer == null || operation.materialChange.materialIndex < 0 ||
+                        operation.materialChange.materialIndex >= operation.renderer.sharedMaterials.Length)
+                        throw ChangedTarget(operation.targetPath);
+                    materials.Add(new PreparedMaterial
+                    {
+                        operation = operation,
+                        change = operation.materialChange,
+                        renderer = operation.renderer,
+                        valueMaterial = operation.valueMaterial,
+                        valueShader = operation.valueShader,
+                        variantPath = operation.variantPath
+                    });
                 }
             }
             else
@@ -160,10 +188,22 @@ namespace AvatarRecipe.Editor.Apply
                     item.renderer.SetBlendShapeWeight(item.index, item.change.value);
                 }
 
-                ValidateResults(prefabs, createdPrefabs, transforms, activeStates, blendShapes);
+                foreach (var item in materials)
+                {
+                    var material = item.valueMaterial;
+                    if (!string.IsNullOrEmpty(item.variantPath))
+                        material = CreateOrLoadMaterialVariant(item);
+                    var slots = item.renderer.sharedMaterials;
+                    Undo.RecordObject(item.renderer, "Apply Avatar Recipe");
+                    slots[item.change.materialIndex] = material;
+                    item.renderer.sharedMaterials = slots;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(item.renderer);
+                }
+
+                ValidateResults(prefabs, createdPrefabs, transforms, activeStates, blendShapes, materials);
                 EditorSceneManager.MarkSceneDirty(target.scene);
                 Undo.CollapseUndoOperations(undoGroup);
-                result.appliedOperations = prefabs.Count + transforms.Count + activeStates.Count + blendShapes.Count;
+                result.appliedOperations = prefabs.Count + transforms.Count + activeStates.Count + blendShapes.Count + materials.Count;
                 return result;
             }
             catch (Exception exception)
@@ -203,8 +243,120 @@ namespace AvatarRecipe.Editor.Apply
             return shapeIndex < 0 ? null : renderer;
         }
 
+        private static Material CreateOrLoadMaterialVariant(PreparedMaterial item)
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<Material>(item.variantPath);
+            if (existing != null)
+            {
+                if (!MatchesVariant(existing, item.change))
+                    throw new InvalidOperationException("Generated material asset already exists with different contents: " + item.variantPath);
+                return existing;
+            }
+            if (AssetDatabase.LoadMainAssetAtPath(item.variantPath) != null)
+                throw new InvalidOperationException("Generated material path is already occupied: " + item.variantPath);
+
+            var source = item.renderer.sharedMaterials[item.change.materialIndex];
+            if (source == null) source = item.change.baselineMaterial == null ? null :
+                LoadMaterial(item.change.baselineMaterial.guid, item.change.baselineMaterial.assetPath);
+            if (source == null) throw new InvalidOperationException("Could not load the baseline Material for a Recipe variant.");
+
+            var folder = "Assets/AvatarRecipeGenerated";
+            EnsureAssetFolder(folder);
+            EnsureAssetFolder(folder + "/Materials");
+            var clone = new Material(source) { name = Path.GetFileNameWithoutExtension(item.variantPath) };
+            if (item.valueShader != null) clone.shader = item.valueShader;
+            foreach (var property in item.change.properties ?? new List<MaterialPropertyChange>())
+                if (property.valueExists && property.value != null) ApplyMaterialProperty(clone, property.name, property.value);
+            clone.renderQueue = item.change.valueRenderQueue;
+            clone.shaderKeywords = item.change.valueShaderKeywords ?? Array.Empty<string>();
+
+            AssetDatabase.CreateAsset(clone, item.variantPath);
+            AssetDatabase.ImportAsset(item.variantPath);
+            return AssetDatabase.LoadAssetAtPath<Material>(item.variantPath);
+        }
+
+        private static void EnsureAssetFolder(string path)
+        {
+            if (AssetDatabase.IsValidFolder(path)) return;
+            var separator = path.LastIndexOf('/');
+            var parent = path.Substring(0, separator);
+            var name = path.Substring(separator + 1);
+            EnsureAssetFolder(parent);
+            AssetDatabase.CreateFolder(parent, name);
+        }
+
+        private static void ApplyMaterialProperty(Material material, string name, MaterialPropertySnapshot value)
+        {
+            if (!material.HasProperty(name))
+                throw new InvalidOperationException("The selected Shader does not contain Material property " + name + ".");
+            switch (value.type)
+            {
+                case "float": material.SetFloat(name, value.floatValue); break;
+                case "color":
+                    material.SetColor(name, new Color(value.vectorValue.x, value.vectorValue.y, value.vectorValue.z, value.vectorValue.w));
+                    break;
+                case "vector":
+                    material.SetVector(name, new Vector4(value.vectorValue.x, value.vectorValue.y, value.vectorValue.z, value.vectorValue.w));
+                    break;
+                case "texture":
+                    var texture = !value.hasTexture || value.texture == null ? null : AssetDatabase.LoadAssetAtPath<Texture>(AssetDatabase.GUIDToAssetPath(value.texture.guid));
+                    if (texture == null && value.texture != null) texture = AssetDatabase.LoadAssetAtPath<Texture>(value.texture.assetPath);
+                    material.SetTexture(name, texture);
+                    material.SetTextureScale(name, new Vector2(value.textureScale.x, value.textureScale.y));
+                    material.SetTextureOffset(name, new Vector2(value.textureOffset.x, value.textureOffset.y));
+                    break;
+                default: throw new InvalidOperationException("Unsupported Material property type: " + value.type);
+            }
+        }
+
+        private static Material LoadMaterial(string guid, string path)
+        {
+            var material = string.IsNullOrEmpty(guid) ? null : AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(guid));
+            return material != null || string.IsNullOrEmpty(path) ? material : AssetDatabase.LoadAssetAtPath<Material>(path);
+        }
+
+        private static bool MatchesVariant(Material material, MaterialChange change)
+        {
+            if (material.renderQueue != change.valueRenderQueue ||
+                !(material.shaderKeywords ?? Array.Empty<string>()).OrderBy(item => item, StringComparer.Ordinal)
+                    .SequenceEqual((change.valueShaderKeywords ?? Array.Empty<string>()).OrderBy(item => item, StringComparer.Ordinal), StringComparer.Ordinal)) return false;
+            if (change.valueShader != null)
+            {
+                var path = AssetDatabase.GetAssetPath(material.shader);
+                var guid = string.IsNullOrEmpty(path) ? string.Empty : AssetDatabase.AssetPathToGUID(path);
+                if (guid != change.valueShader.guid && !string.Equals(path, change.valueShader.assetPath, StringComparison.OrdinalIgnoreCase)) return false;
+            }
+            foreach (var property in change.properties ?? new List<MaterialPropertyChange>())
+            {
+                if (!property.valueExists || property.value == null || !material.HasProperty(property.name)) continue;
+                var value = property.value;
+                switch (value.type)
+                {
+                    case "float": if (Mathf.Abs(material.GetFloat(property.name) - value.floatValue) > Tolerance) return false; break;
+                    case "color":
+                    case "vector":
+                        var vector = material.GetVector(property.name);
+                        if (!Approximately(vector, value.vectorValue)) return false;
+                        break;
+                    case "texture":
+                        var currentTexture = material.GetTexture(property.name);
+                        if ((currentTexture != null) != value.hasTexture) return false;
+                        var texturePath = AssetDatabase.GetAssetPath(currentTexture);
+                        var textureGuid = string.IsNullOrEmpty(texturePath) ? string.Empty : AssetDatabase.AssetPathToGUID(texturePath);
+                        if (value.texture != null && textureGuid != value.texture.guid && !string.Equals(texturePath, value.texture.assetPath, StringComparison.OrdinalIgnoreCase)) return false;
+                        var scale = material.GetTextureScale(property.name);
+                        var offset = material.GetTextureOffset(property.name);
+                        if (Mathf.Abs(scale.x - value.textureScale.x) > Tolerance || Mathf.Abs(scale.y - value.textureScale.y) > Tolerance ||
+                            Mathf.Abs(offset.x - value.textureOffset.x) > Tolerance || Mathf.Abs(offset.y - value.textureOffset.y) > Tolerance) return false;
+                        break;
+                }
+            }
+            return true;
+        }
+
         private static void ValidateResults(List<PreparedPrefab> prefabs, List<GameObject> instances,
-            List<PreparedTransform> transforms, List<PreparedActive> activeStates, List<PreparedBlendShape> blendShapes)
+            List<PreparedTransform> transforms, List<PreparedActive> activeStates, List<PreparedBlendShape> blendShapes,
+            List<PreparedMaterial> materials)
         {
             for (var i = 0; i < prefabs.Count; i++)
             {
@@ -232,6 +384,17 @@ namespace AvatarRecipe.Editor.Apply
             foreach (var item in blendShapes)
                 if (Mathf.Abs(item.renderer.GetBlendShapeWeight(item.index) - item.change.value) > Tolerance)
                     throw new InvalidOperationException("Final BlendShape validation failed: " + item.change.target.path + "/" + item.change.name);
+            foreach (var item in materials)
+            {
+                var assigned = item.renderer.sharedMaterials[item.change.materialIndex];
+                if (!string.IsNullOrEmpty(item.variantPath))
+                {
+                    if (assigned != AssetDatabase.LoadAssetAtPath<Material>(item.variantPath) || !MatchesVariant(assigned, item.change))
+                        throw new InvalidOperationException("Final Material validation failed: " + item.change.target.path);
+                }
+                else if (assigned != item.valueMaterial)
+                    throw new InvalidOperationException("Final Material validation failed: " + item.change.target.path);
+            }
         }
 
         private static string TransformKey(TransformChange change) => "transform|" + change.target.path + "|" + change.property;
@@ -247,5 +410,8 @@ namespace AvatarRecipe.Editor.Apply
             Mathf.Abs(current.z - expected.z) <= Tolerance;
         private static bool Approximately(Quaternion current, QuaternionValue expected) =>
             Mathf.Abs(Mathf.Abs(Quaternion.Dot(current.normalized, ToUnity(expected).normalized)) - 1f) <= Tolerance;
+        private static bool Approximately(Vector4 current, Vector4Value expected) =>
+            Mathf.Abs(current.x - expected.x) <= Tolerance && Mathf.Abs(current.y - expected.y) <= Tolerance &&
+            Mathf.Abs(current.z - expected.z) <= Tolerance && Mathf.Abs(current.w - expected.w) <= Tolerance;
     }
 }

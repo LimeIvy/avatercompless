@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using AvatarRecipe.Editor.Core.Models;
+using UnityEngine;
 
 namespace AvatarRecipe.Editor.Apply
 {
@@ -28,6 +30,12 @@ namespace AvatarRecipe.Editor.Apply
         public string kind;
         public string targetPath;
         public string description;
+        public string changeKey;
+        public MaterialChange materialChange;
+        public Renderer renderer;
+        public Material valueMaterial;
+        public Shader valueShader;
+        public string variantPath;
     }
 
     [Serializable]
