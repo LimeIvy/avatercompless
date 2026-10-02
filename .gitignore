@@ -1,0 +1,23 @@
+# This repository publishes the Avatar Recipe package source only.
+/*
+!/.gitignore
+!/README.md
+!/Packages/
+/Packages/*
+!/Packages/com.raimu.avatar-recipe/
+!/Packages/com.raimu.avatar-recipe/**
+
+# Internal agent instructions and planning documents
+/AGENTS.md
+**/AGENTS.md
+/AGENT.md
+**/AGENT.md
+/.agents/
+/.codex/
+/.claude/
+/.cursor/
+/docs/
+
+# Unity packages and local build output
+*.unitypackage
+/Builds/

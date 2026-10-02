@@ -1,0 +1,7 @@
+{
+  "name": "com.raimu.avatar-recipe",
+  "version": "0.1.0",
+  "displayName": "Avatar Recipe",
+  "description": "Record and reapply avatar modifications in the Unity Editor. UI: Japanese, English, Simplified Chinese, and Korean.",
+  "unity": "2022.3"
+}

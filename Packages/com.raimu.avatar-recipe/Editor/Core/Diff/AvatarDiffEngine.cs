@@ -1,0 +1,446 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using AvatarRecipe.Editor.Core.Models;
+using AvatarRecipe.Editor.Core.Snapshot;
+
+namespace AvatarRecipe.Editor.Core.Diff
+{
+    public static class AvatarDiffEngine
+    {
+        public static RecipeState Diff(AvatarSnapshot baseline, AvatarSnapshot current)
+        {
+            ValidateSnapshot(baseline, nameof(baseline));
+            ValidateSnapshot(current, nameof(current));
+            var baselinePrefabs = IndexPrefabs(baseline.addedPrefabs);
+            var currentPrefabs = IndexPrefabs(current.addedPrefabs);
+            var addedPrefabs = currentPrefabs.Values
+                .Where(prefab => !baselinePrefabs.ContainsKey(GetPrefabIdentity(prefab)))
+                .OrderBy(prefab => prefab.path, StringComparer.Ordinal)
+                .ThenBy(prefab => prefab.sourceGuid, StringComparer.Ordinal)
+                .ToList();
+            current = ExcludeAddedPrefabSubtrees(current, addedPrefabs);
+            var recipeState = new RecipeState();
+
+            var baselineTransformMap = IndexByPath(baseline.transforms, snapshot => snapshot.path, "Transform");
+            var currentTransformMap = IndexByPath(current.transforms, snapshot => snapshot.path, "Transform");
+            var commonTransformPaths = new HashSet<string>(baselineTransformMap.Keys, StringComparer.Ordinal);
+            commonTransformPaths.IntersectWith(currentTransformMap.Keys);
+            AddHierarchyReviewItems(recipeState, baselineTransformMap.Keys, currentTransformMap.Keys);
+
+            var baselineBlendShapes = IndexBlendShapes(baseline.blendShapes);
+            var currentBlendShapes = IndexBlendShapes(current.blendShapes);
+            AddBlendShapeReviewItems(recipeState, baselineBlendShapes, currentBlendShapes, commonTransformPaths);
+            baseline = FilterSnapshot(baseline, commonTransformPaths,
+                baselineBlendShapes.Keys.Intersect(currentBlendShapes.Keys).ToHashSet());
+            current = FilterSnapshot(current, commonTransformPaths,
+                currentBlendShapes.Keys.Intersect(baselineBlendShapes.Keys).ToHashSet());
+
+            foreach (var prefab in addedPrefabs)
+            {
+                var parentPath = GetParentPath(prefab.path);
+                if (!baselineTransformMap.ContainsKey(parentPath) || !currentTransformMap.ContainsKey(parentPath))
+                {
+                    recipeState.manualReview.Add("Added Prefab parent is not present in the base Avatar: " +
+                                                 DisplayPath(parentPath) + " (" + prefab.sourceName + ")");
+                    continue;
+                }
+
+                var identity = GetPrefabIdentity(prefab);
+                recipeState.addedPrefabs.Add(new AddedPrefabEntry
+                {
+                    id = CreateRecipePrefabId(identity),
+                    name = prefab.sourceName,
+                    guid = prefab.sourceGuid,
+                    assetPath = prefab.sourceAssetPath,
+                    parentScope = TargetLocator.BaseScope,
+                    parentPath = parentPath,
+                    siblingIndex = prefab.siblingIndex,
+                    localPosition = prefab.localPosition,
+                    localRotation = prefab.localRotation,
+                    localScale = prefab.localScale
+                });
+            }
+            recipeState.manualReview = recipeState.manualReview.Distinct(StringComparer.Ordinal)
+                .OrderBy(item => item, StringComparer.Ordinal).ToList();
+            var currentTransforms = IndexByPath(current.transforms, snapshot => snapshot.path, "Transform");
+            foreach (var baselineTransform in SortByPath(baseline.transforms, snapshot => snapshot.path))
+            {
+                var currentTransform = currentTransforms[baselineTransform.path];
+                AddVector3Change(recipeState, baselineTransform.path, "localPosition",
+                    baselineTransform.localPosition, currentTransform.localPosition);
+                AddQuaternionChange(recipeState, baselineTransform.path, "localRotation",
+                    baselineTransform.localRotation, currentTransform.localRotation);
+                AddVector3Change(recipeState, baselineTransform.path, "localScale",
+                    baselineTransform.localScale, currentTransform.localScale);
+            }
+
+            var currentBlendShapeMap = IndexBlendShapes(current.blendShapes);
+            foreach (var baselineBlendShape in SortBlendShapes(baseline.blendShapes))
+            {
+                var identity = new BlendShapeIdentity(baselineBlendShape);
+                var currentBlendShape = currentBlendShapeMap[identity];
+                var before = AvatarSnapshotBuilder.Normalize(baselineBlendShape.weight);
+                var after = AvatarSnapshotBuilder.Normalize(currentBlendShape.weight);
+                if (before.Equals(after))
+                {
+                    continue;
+                }
+
+                recipeState.blendShapeChanges.Add(new BlendShapeChange
+                {
+                    target = CopyTarget(baselineBlendShape.target),
+                    name = baselineBlendShape.name,
+                    baseline = before,
+                    value = after
+                });
+            }
+
+            var currentActiveStates = IndexByPath(current.activeStates, snapshot => snapshot.path, "Active state");
+            foreach (var baselineActive in SortByPath(baseline.activeStates, snapshot => snapshot.path))
+            {
+                var currentActive = currentActiveStates[baselineActive.path];
+                if (baselineActive.activeSelf == currentActive.activeSelf)
+                {
+                    continue;
+                }
+
+                recipeState.activeStateChanges.Add(new ActiveStateChange
+                {
+                    target = new TargetLocator
+                    {
+                        scope = TargetLocator.BaseScope,
+                        path = baselineActive.path
+                    },
+                    baseline = baselineActive.activeSelf,
+                    value = currentActive.activeSelf
+                });
+            }
+
+            return recipeState;
+        }
+
+        private static void ValidateSnapshot(AvatarSnapshot snapshot, string parameterName)
+        {
+            if (snapshot == null)
+            {
+                throw new ArgumentNullException(parameterName);
+            }
+
+            if (snapshot.schemaVersion != AvatarSnapshot.CurrentSchemaVersion)
+            {
+                throw new ArgumentException("Unsupported AvatarSnapshot schema version: " + snapshot.schemaVersion,
+                    parameterName);
+            }
+
+            if (snapshot.transforms == null || snapshot.blendShapes == null || snapshot.activeStates == null)
+            {
+                throw new ArgumentException("AvatarSnapshot contains a missing collection.", parameterName);
+            }
+        }
+
+        private static Dictionary<string, AddedPrefabSnapshot> IndexPrefabs(List<AddedPrefabSnapshot> prefabs)
+        {
+            var result = new Dictionary<string, AddedPrefabSnapshot>(StringComparer.Ordinal);
+            if (prefabs == null)
+            {
+                return result;
+            }
+
+            foreach (var prefab in prefabs)
+            {
+                if (prefab == null || string.IsNullOrEmpty(prefab.globalObjectId) ||
+                    string.IsNullOrEmpty(prefab.path) || string.IsNullOrEmpty(prefab.sourceGuid) ||
+                    string.IsNullOrEmpty(prefab.sourceAssetPath) ||
+                    !result.TryAdd(GetPrefabIdentity(prefab), prefab))
+                {
+                    throw new ArgumentException("AvatarSnapshot contains an invalid or duplicate Prefab identity.");
+                }
+            }
+            return result;
+        }
+
+        private static AvatarSnapshot ExcludeAddedPrefabSubtrees(AvatarSnapshot snapshot,
+            List<AddedPrefabSnapshot> addedPrefabs)
+        {
+            if (addedPrefabs.Count == 0)
+            {
+                return snapshot;
+            }
+
+            var addedPrefabPaths = new HashSet<string>(
+                addedPrefabs.Select(prefab => prefab.path), StringComparer.Ordinal);
+
+            bool IsWithinAddedPrefab(string path)
+            {
+                if (addedPrefabPaths.Contains(path)) return true;
+                for (var separator = path.LastIndexOf('/'); separator >= 0;
+                     separator = separator == 0 ? -1 : path.LastIndexOf('/', separator - 1))
+                {
+                    if (addedPrefabPaths.Contains(path.Substring(0, separator))) return true;
+                }
+                return false;
+            }
+
+            return new AvatarSnapshot
+            {
+                schemaVersion = snapshot.schemaVersion,
+                transforms = snapshot.transforms.Where(item => !IsWithinAddedPrefab(item.path)).ToList(),
+                blendShapes = snapshot.blendShapes.Where(item => !IsWithinAddedPrefab(item.target.path)).ToList(),
+                activeStates = snapshot.activeStates.Where(item => !IsWithinAddedPrefab(item.path)).ToList(),
+                addedPrefabs = snapshot.addedPrefabs
+            };
+        }
+
+        private static string GetParentPath(string path)
+        {
+            var separatorIndex = path.LastIndexOf('/');
+            return separatorIndex < 0 ? string.Empty : path.Substring(0, separatorIndex);
+        }
+
+        private static string CreateRecipePrefabId(string stableIdentity)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(stableIdentity));
+                var builder = new System.Text.StringBuilder("prefab-");
+                for (var index = 0; index < 8; index++)
+                {
+                    builder.Append(bytes[index].ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                return builder.ToString();
+            }
+        }
+
+        private static AvatarSnapshot FilterSnapshot(AvatarSnapshot snapshot, HashSet<string> commonPaths,
+            HashSet<BlendShapeIdentity> commonBlendShapes)
+        {
+            return new AvatarSnapshot
+            {
+                schemaVersion = snapshot.schemaVersion,
+                transforms = snapshot.transforms.Where(item => commonPaths.Contains(item.path)).ToList(),
+                activeStates = snapshot.activeStates.Where(item => commonPaths.Contains(item.path)).ToList(),
+                blendShapes = snapshot.blendShapes.Where(item => commonBlendShapes.Contains(new BlendShapeIdentity(item))).ToList(),
+                addedPrefabs = snapshot.addedPrefabs
+            };
+        }
+
+        private static void AddHierarchyReviewItems(RecipeState state, ICollection<string> baselinePaths,
+            ICollection<string> currentPaths)
+        {
+            var baseline = new HashSet<string>(baselinePaths, StringComparer.Ordinal);
+            var current = new HashSet<string>(currentPaths, StringComparer.Ordinal);
+            AddPathReviewItems(state, baseline.Except(current), true);
+            AddPathReviewItems(state, current.Except(baseline), false);
+        }
+
+        private static void AddPathReviewItems(RecipeState state, IEnumerable<string> paths, bool removed)
+        {
+            var candidates = paths.OrderBy(path => path.Count(character => character == '/'))
+                .ThenBy(path => path, StringComparer.Ordinal).ToList();
+            var roots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var path in candidates)
+            {
+                var coveredByReportedRoot = false;
+                for (var separator = path.LastIndexOf('/'); separator >= 0;
+                     separator = separator == 0 ? -1 : path.LastIndexOf('/', separator - 1))
+                {
+                    if (!roots.Contains(path.Substring(0, separator))) continue;
+                    coveredByReportedRoot = true;
+                    break;
+                }
+                if (coveredByReportedRoot) continue;
+                roots.Add(path);
+                state.manualReview.Add(removed
+                    ? "Removed base object requires manual review: " + DisplayPath(path)
+                    : "Added object has no source Prefab; automatic restore is unsupported: " + DisplayPath(path));
+            }
+        }
+
+        private static void AddBlendShapeReviewItems(RecipeState state,
+            Dictionary<BlendShapeIdentity, BlendShapeSnapshot> baseline,
+            Dictionary<BlendShapeIdentity, BlendShapeSnapshot> current,
+            HashSet<string> commonTransformPaths)
+        {
+            foreach (var key in current.Keys.Except(baseline.Keys)
+                         .Where(key => commonTransformPaths.Contains(key.Path))
+                         .OrderBy(key => key.Path, StringComparer.Ordinal).ThenBy(key => key.ComponentId, StringComparer.Ordinal)
+                         .ThenBy(key => key.Name, StringComparer.Ordinal))
+            {
+                state.manualReview.Add("Added BlendShape is not included in MVP reconstruction: " + key.Path + "/" + key.Name);
+            }
+            foreach (var key in baseline.Keys.Except(current.Keys)
+                         .Where(key => commonTransformPaths.Contains(key.Path))
+                         .OrderBy(key => key.Path, StringComparer.Ordinal).ThenBy(key => key.ComponentId, StringComparer.Ordinal)
+                         .ThenBy(key => key.Name, StringComparer.Ordinal))
+            {
+                state.manualReview.Add("Removed BlendShape requires manual review: " + key.Path + "/" + key.Name);
+            }
+        }
+
+        private static string GetPrefabIdentity(AddedPrefabSnapshot prefab)
+        {
+            return prefab.sourceGuid + "\n" + prefab.path;
+        }
+
+        private static string DisplayPath(string path)
+        {
+            return string.IsNullOrEmpty(path) ? "<Avatar Root>" : path;
+        }
+
+        private static Dictionary<string, T> IndexByPath<T>(IEnumerable<T> items, Func<T, string> pathSelector, string kind)
+        {
+            var result = new Dictionary<string, T>(StringComparer.Ordinal);
+            foreach (var item in items)
+            {
+                if (ReferenceEquals(item, null))
+                {
+                    throw new ArgumentException("AvatarSnapshot contains a null " + kind + " entry.");
+                }
+
+                var path = pathSelector(item);
+                if (path == null || !result.TryAdd(path, item))
+                {
+                    throw new ArgumentException("AvatarSnapshot contains an invalid or duplicate " + kind + " path.");
+                }
+            }
+
+            return result;
+        }
+
+        private static Dictionary<BlendShapeIdentity, BlendShapeSnapshot> IndexBlendShapes(
+            IEnumerable<BlendShapeSnapshot> blendShapes)
+        {
+            var result = new Dictionary<BlendShapeIdentity, BlendShapeSnapshot>();
+            foreach (var blendShape in blendShapes)
+            {
+                if (blendShape == null || blendShape.target == null || blendShape.target.path == null ||
+                    blendShape.target.scope != TargetLocator.BaseScope ||
+                    string.IsNullOrEmpty(blendShape.target.componentId) || blendShape.name == null ||
+                    !result.TryAdd(new BlendShapeIdentity(blendShape), blendShape))
+                {
+                    throw new ArgumentException("AvatarSnapshot contains an invalid or duplicate BlendShape identity.");
+                }
+            }
+
+            return result;
+        }
+
+        private static List<T> SortByPath<T>(List<T> items, Func<T, string> pathSelector)
+        {
+            var sorted = new List<T>(items);
+            sorted.Sort((left, right) => StringComparer.Ordinal.Compare(pathSelector(left), pathSelector(right)));
+            return sorted;
+        }
+
+        private static List<BlendShapeSnapshot> SortBlendShapes(List<BlendShapeSnapshot> items)
+        {
+            return items
+                .OrderBy(item => item.target.path, StringComparer.Ordinal)
+                .ThenBy(item => item.target.componentId, StringComparer.Ordinal)
+                .ThenBy(item => item.name, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        private static void AddVector3Change(RecipeState recipeState, string path, string property,
+            Vector3Value baseline, Vector3Value current)
+        {
+            baseline = new Vector3Value(
+                AvatarSnapshotBuilder.Normalize(baseline.x),
+                AvatarSnapshotBuilder.Normalize(baseline.y),
+                AvatarSnapshotBuilder.Normalize(baseline.z));
+            current = new Vector3Value(
+                AvatarSnapshotBuilder.Normalize(current.x),
+                AvatarSnapshotBuilder.Normalize(current.y),
+                AvatarSnapshotBuilder.Normalize(current.z));
+            if (baseline.Equals(current))
+            {
+                return;
+            }
+
+            recipeState.transformChanges.Add(new TransformChange
+            {
+                target = BaseTarget(path),
+                property = property,
+                baselineVector3 = baseline,
+                valueVector3 = current
+            });
+        }
+
+        private static void AddQuaternionChange(RecipeState recipeState, string path, string property,
+            QuaternionValue baseline, QuaternionValue current)
+        {
+            baseline = AvatarSnapshotBuilder.Normalize(new UnityEngine.Quaternion(
+                baseline.x, baseline.y, baseline.z, baseline.w));
+            current = AvatarSnapshotBuilder.Normalize(new UnityEngine.Quaternion(
+                current.x, current.y, current.z, current.w));
+            if (baseline.Equals(current))
+            {
+                return;
+            }
+
+            recipeState.transformChanges.Add(new TransformChange
+            {
+                target = BaseTarget(path),
+                property = property,
+                baselineQuaternion = baseline,
+                valueQuaternion = current
+            });
+        }
+
+        private static TargetLocator BaseTarget(string path)
+        {
+            return new TargetLocator { scope = TargetLocator.BaseScope, path = path };
+        }
+
+        private static TargetLocator CopyTarget(TargetLocator target)
+        {
+            return new TargetLocator
+            {
+                scope = target.scope,
+                path = target.path,
+                componentId = target.componentId
+            };
+        }
+
+        private readonly struct BlendShapeIdentity : IEquatable<BlendShapeIdentity>
+        {
+            private readonly string _path;
+            private readonly string _componentId;
+            private readonly string _name;
+
+            public BlendShapeIdentity(BlendShapeSnapshot snapshot)
+            {
+                _path = snapshot.target.path;
+                _componentId = snapshot.target.componentId;
+                _name = snapshot.name;
+            }
+
+            public string Path => _path;
+            public string ComponentId => _componentId;
+            public string Name => _name;
+
+            public bool Equals(BlendShapeIdentity other)
+            {
+                return string.Equals(_path, other._path, StringComparison.Ordinal) &&
+                       string.Equals(_componentId, other._componentId, StringComparison.Ordinal) &&
+                       string.Equals(_name, other._name, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is BlendShapeIdentity other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = StringComparer.Ordinal.GetHashCode(_path);
+                    hashCode = (hashCode * 397) ^ StringComparer.Ordinal.GetHashCode(_componentId);
+                    return (hashCode * 397) ^ StringComparer.Ordinal.GetHashCode(_name);
+                }
+            }
+        }
+    }
+}
