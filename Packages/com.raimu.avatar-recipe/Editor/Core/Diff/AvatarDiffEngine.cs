@@ -20,8 +20,12 @@ namespace AvatarRecipe.Editor.Core.Diff
                 .OrderBy(prefab => prefab.path, StringComparer.Ordinal)
                 .ThenBy(prefab => prefab.sourceGuid, StringComparer.Ordinal)
                 .ToList();
+            var currentWithAddedPrefabs = current;
             current = ExcludeAddedPrefabSubtrees(current, addedPrefabs);
             var recipeState = new RecipeState();
+            var baselineTransformPaths = new HashSet<string>(baseline.transforms.Select(item => item.path), StringComparer.Ordinal);
+            AddModularAvatarChanges(recipeState, baseline.modularAvatarComponents,
+                currentWithAddedPrefabs.modularAvatarComponents, baselineTransformPaths);
 
             var baselineTransformMap = IndexByPath(baseline.transforms, snapshot => snapshot.path, "Transform");
             var currentTransformMap = IndexByPath(current.transforms, snapshot => snapshot.path, "Transform");
@@ -122,6 +126,165 @@ namespace AvatarRecipe.Editor.Core.Diff
             }
 
             return recipeState;
+        }
+
+        private static void AddModularAvatarChanges(RecipeState state,
+            IList<ModularAvatarComponentSnapshot> baselineEntries, IList<ModularAvatarComponentSnapshot> currentEntries,
+            HashSet<string> baselineTransformPaths)
+        {
+            var baseline = (baselineEntries ?? new List<ModularAvatarComponentSnapshot>())
+                .Where(item => item != null).ToDictionary(item => item.key, StringComparer.Ordinal);
+            var current = (currentEntries ?? new List<ModularAvatarComponentSnapshot>())
+                .Where(item => item != null).ToDictionary(item => item.key, StringComparer.Ordinal);
+
+            foreach (var key in baseline.Keys.Union(current.Keys, StringComparer.Ordinal).OrderBy(item => item, StringComparer.Ordinal))
+            {
+                baseline.TryGetValue(key, out var before);
+                current.TryGetValue(key, out var after);
+                if (before != null && after != null && ComponentsEqual(before, after)) continue;
+
+                var change = new ModularAvatarChange
+                {
+                    operation = before == null ? "added" : after == null ? "removed" : "modified",
+                    path = (after ?? before).path,
+                    createHost = after != null && !baselineTransformPaths.Contains(after.path),
+                    hasHostPlacement = after != null && before == null,
+                    hostParentPath = (after ?? before).hostParentPath,
+                    hostSiblingIndex = (after ?? before).hostSiblingIndex,
+                    hostLocalPosition = (after ?? before).hostLocalPosition,
+                    hostLocalRotation = (after ?? before).hostLocalRotation,
+                    hostLocalScale = (after ?? before).hostLocalScale,
+                    hostActive = (after ?? before).hostActive,
+                    componentType = (after ?? before).componentType,
+                    componentName = (after ?? before).componentName,
+                    baselineEnabled = before != null && before.enabled,
+                    valueEnabled = after != null && after.enabled
+                };
+                var beforeProperties = (before == null ? new List<ModularAvatarPropertySnapshot>() : before.properties ?? new List<ModularAvatarPropertySnapshot>())
+                    .Where(item => item != null && AvatarSnapshotBuilder.IsUserFacingModularPropertyPath(item.path))
+                    .ToDictionary(item => item.path, item => item.value, StringComparer.Ordinal);
+                var afterProperties = (after == null ? new List<ModularAvatarPropertySnapshot>() : after.properties ?? new List<ModularAvatarPropertySnapshot>())
+                    .Where(item => item != null && AvatarSnapshotBuilder.IsUserFacingModularPropertyPath(item.path))
+                    .ToDictionary(item => item.path, item => item.value, StringComparer.Ordinal);
+                foreach (var propertyPath in beforeProperties.Keys.Union(afterProperties.Keys, StringComparer.Ordinal).OrderBy(item => item, StringComparer.Ordinal))
+                {
+                    beforeProperties.TryGetValue(propertyPath, out var oldValue);
+                    afterProperties.TryGetValue(propertyPath, out var newValue);
+                    if (beforeProperties.ContainsKey(propertyPath) == afterProperties.ContainsKey(propertyPath) &&
+                        string.Equals(oldValue, newValue, StringComparison.Ordinal)) continue;
+                    change.properties.Add(new ModularAvatarPropertyChange
+                    {
+                        path = propertyPath,
+                        baselineExists = beforeProperties.ContainsKey(propertyPath),
+                        baseline = oldValue ?? string.Empty,
+                        valueExists = afterProperties.ContainsKey(propertyPath),
+                        value = newValue ?? string.Empty
+                    });
+                }
+                state.modularAvatarChanges.Add(change);
+            }
+
+            AddModularAvatarDisplayContext(state.modularAvatarChanges,
+                baselineEntries ?? new List<ModularAvatarComponentSnapshot>(),
+                currentEntries ?? new List<ModularAvatarComponentSnapshot>());
+
+            if (state.modularAvatarChanges.Any(change => !IsSupportedModularChange(change, state.modularAvatarChanges)))
+                state.manualReview.Add("Modular Avatar changes are recorded in modular-avatar.md and require manual review; they are not applied automatically.");
+        }
+
+        private static void AddModularAvatarDisplayContext(IList<ModularAvatarChange> changes,
+            IList<ModularAvatarComponentSnapshot> baseline, IList<ModularAvatarComponentSnapshot> current)
+        {
+            foreach (var change in changes)
+            {
+                if (change.componentName != "ModularAvatarMenuItem" && change.componentName != "ModularAvatarObjectToggle")
+                    continue;
+
+                var menu = current.FirstOrDefault(item => item.path == change.path && item.componentName == "ModularAvatarMenuItem") ??
+                           baseline.FirstOrDefault(item => item.path == change.path && item.componentName == "ModularAvatarMenuItem");
+                if (menu != null)
+                {
+                    var label = SnapshotValue(menu, "label");
+                    change.displayName = string.IsNullOrWhiteSpace(label) ? DisplayLeaf(change.path) : label;
+                    change.displayType = EnumName(SnapshotValue(menu, "Control.type"));
+                }
+
+                var toggle = current.FirstOrDefault(item => item.path == change.path && item.componentName == "ModularAvatarObjectToggle") ??
+                             baseline.FirstOrDefault(item => item.path == change.path && item.componentName == "ModularAvatarObjectToggle");
+                if (toggle != null)
+                    change.targets = SnapshotToggleTargets(toggle);
+            }
+        }
+
+        private static List<ModularAvatarTarget> SnapshotToggleTargets(ModularAvatarComponentSnapshot toggle)
+        {
+            var properties = (toggle.properties ?? new List<ModularAvatarPropertySnapshot>())
+                .Where(item => item != null).ToDictionary(item => item.path, item => item.value, StringComparer.Ordinal);
+            var indices = properties.Keys.Where(path => path.StartsWith("m_objects.Array.data[", StringComparison.Ordinal) &&
+                    path.EndsWith(".Object.referencePath", StringComparison.Ordinal))
+                .Select(path => ArrayElementIndex(path, ".Object.referencePath"))
+                .Where(index => index >= 0).Distinct().OrderBy(index => index);
+            var result = new List<ModularAvatarTarget>();
+            foreach (var index in indices)
+            {
+                var prefix = "m_objects.Array.data[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]";
+                var targetPath = SnapshotValue(properties, prefix + ".Object.referencePath");
+                if (string.IsNullOrEmpty(targetPath)) continue;
+                var activeValue = SnapshotValue(properties, prefix + ".Active");
+                result.Add(new ModularAvatarTarget
+                {
+                    path = targetPath,
+                    activeWhenEnabled = !string.Equals(activeValue, "false", StringComparison.OrdinalIgnoreCase)
+                });
+            }
+            return result;
+        }
+
+        private static int ArrayElementIndex(string propertyPath, string suffix)
+        {
+            const string prefix = "m_objects.Array.data[";
+            var start = prefix.Length;
+            var end = propertyPath.IndexOf(']', start);
+            return end < 0 || !propertyPath.EndsWith(suffix, StringComparison.Ordinal) ||
+                   !int.TryParse(propertyPath.Substring(start, end - start), out var index) ? -1 : index;
+        }
+
+        private static string SnapshotValue(ModularAvatarComponentSnapshot component, string path)
+        {
+            var property = (component.properties ?? new List<ModularAvatarPropertySnapshot>())
+                .FirstOrDefault(item => item != null && item.path == path);
+            return property == null ? string.Empty : property.value ?? string.Empty;
+        }
+
+        private static string SnapshotValue(IDictionary<string, string> properties, string path) =>
+            properties.TryGetValue(path, out var value) ? value ?? string.Empty : string.Empty;
+
+        private static string EnumName(string serializedEnum)
+        {
+            if (string.IsNullOrEmpty(serializedEnum)) return string.Empty;
+            var colon = serializedEnum.IndexOf(':');
+            return colon < 0 ? serializedEnum : serializedEnum.Substring(colon + 1);
+        }
+
+        private static string DisplayLeaf(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "Avatar";
+            var separator = path.LastIndexOf('/');
+            var leaf = separator < 0 ? path : path.Substring(separator + 1);
+            try { return Uri.UnescapeDataString(leaf); }
+            catch (UriFormatException) { return leaf; }
+        }
+
+        private static bool ComponentsEqual(ModularAvatarComponentSnapshot left, ModularAvatarComponentSnapshot right)
+        {
+            if (left.enabled != right.enabled) return false;
+            var leftProperties = left.properties ?? new List<ModularAvatarPropertySnapshot>();
+            var rightProperties = right.properties ?? new List<ModularAvatarPropertySnapshot>();
+            if (leftProperties.Count != rightProperties.Count) return false;
+            for (var index = 0; index < leftProperties.Count; index++)
+                if (leftProperties[index].path != rightProperties[index].path || leftProperties[index].value != rightProperties[index].value)
+                    return false;
+            return true;
         }
 
         private static void ValidateSnapshot(AvatarSnapshot snapshot, string parameterName)
@@ -236,11 +399,15 @@ namespace AvatarRecipe.Editor.Core.Diff
         {
             var baseline = new HashSet<string>(baselinePaths, StringComparer.Ordinal);
             var current = new HashSet<string>(currentPaths, StringComparer.Ordinal);
-            AddPathReviewItems(state, baseline.Except(current), true);
-            AddPathReviewItems(state, current.Except(baseline), false);
+            AddPathReviewItems(state, baseline.Except(current), true, null);
+            var supportedHosts = new HashSet<string>((state.modularAvatarChanges ?? new List<ModularAvatarChange>())
+                .Where(change => change.operation == "added" && change.hasHostPlacement &&
+                    IsSupportedModularChange(change, state.modularAvatarChanges))
+                .Select(change => change.path), StringComparer.Ordinal);
+            AddPathReviewItems(state, current.Except(baseline), false, supportedHosts);
         }
 
-        private static void AddPathReviewItems(RecipeState state, IEnumerable<string> paths, bool removed)
+        private static void AddPathReviewItems(RecipeState state, IEnumerable<string> paths, bool removed, HashSet<string> supportedHosts)
         {
             var candidates = paths.OrderBy(path => path.Count(character => character == '/'))
                 .ThenBy(path => path, StringComparer.Ordinal).ToList();
@@ -256,11 +423,23 @@ namespace AvatarRecipe.Editor.Core.Diff
                     break;
                 }
                 if (coveredByReportedRoot) continue;
+                if (!removed && supportedHosts != null && supportedHosts.Contains(path)) continue;
                 roots.Add(path);
                 state.manualReview.Add(removed
                     ? "Removed base object requires manual review: " + DisplayPath(path)
                     : "Added object has no source Prefab; automatic restore is unsupported: " + DisplayPath(path));
             }
+        }
+
+        private static bool IsSupportedModularChange(ModularAvatarChange change, IList<ModularAvatarChange> changes)
+        {
+            if (change == null || change.operation != "added" || !change.hasHostPlacement) return false;
+            if (change.componentName != "ModularAvatarMenuInstaller" && change.componentName != "ModularAvatarMenuItem" &&
+                change.componentName != "ModularAvatarObjectToggle") return false;
+            return changes.Any(item => item != null && item.operation == "added" && item.path == change.path &&
+                item.componentName == "ModularAvatarMenuItem") &&
+                changes.Any(item => item != null && item.operation == "added" && item.path == change.path &&
+                item.componentName == "ModularAvatarObjectToggle");
         }
 
         private static void AddBlendShapeReviewItems(RecipeState state,
@@ -370,6 +549,37 @@ namespace AvatarRecipe.Editor.Core.Diff
                                                target.path + " slot " + materialIndex);
                         continue;
                     }
+                    var duplicateAssignmentProperties = new List<string>();
+                    var sameShader = before != null && after != null &&
+                        before.hasShader == after.hasShader && SameAsset(before.shader, after.shader);
+                    var assignmentPropertyChanges = sameShader
+                        ? DiffMaterialProperties(before.properties, after.properties, out duplicateAssignmentProperties)
+                        : new List<MaterialPropertyChange>();
+                    var materialState = new List<MaterialPropertySnapshot>();
+                    if (after != null && after.hasMaterial)
+                    {
+                        var stateDuplicates = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (var property in after.properties ?? new List<MaterialPropertySnapshot>())
+                        {
+                            if (!stateDuplicates.Add(property.name)) continue;
+                            materialState.Add(CopyProperty(property));
+                        }
+                        foreach (var propertyName in (after.properties ?? new List<MaterialPropertySnapshot>())
+                                     .GroupBy(item => item.name, StringComparer.Ordinal)
+                                     .Where(group => group.Count() > 1 && !string.Equals(group.Key, "_DummyProperty", StringComparison.Ordinal))
+                                     .Select(group => group.Key))
+                            state.manualReview.Add(AvatarRecipeLocalization.Format(
+                                "Shader declares duplicate Material property name, skipped: {0} at {1} (slot {2})",
+                                propertyName, target.path, materialIndex));
+                        materialState.RemoveAll(item => string.Equals(item.name, "_DummyProperty", StringComparison.Ordinal));
+                    }
+                    if (before != null && after != null)
+                    {
+                        foreach (var propertyName in duplicateAssignmentProperties)
+                            state.manualReview.Add(AvatarRecipeLocalization.Format(
+                                "Shader declares duplicate Material property name, skipped: {0} at {1} (slot {2})",
+                                propertyName, target.path, materialIndex));
+                    }
                     state.materialChanges.Add(new MaterialChange
                     {
                         target = CopyTarget(target),
@@ -377,14 +587,30 @@ namespace AvatarRecipe.Editor.Core.Diff
                         baselineMaterial = CopyAsset(before == null ? null : before.material),
                         valueMaterial = CopyAsset(after == null ? null : after.material),
                         baselineShader = CopyAsset(before == null ? null : before.shader),
-                        valueShader = CopyAsset(after == null ? null : after.shader)
+                        valueShader = CopyAsset(after == null ? null : after.shader),
+                        baselineRenderQueue = before == null ? 0 : before.renderQueue,
+                        valueRenderQueue = after == null ? 0 : after.renderQueue,
+                        baselineShaderKeywords = before == null ? Array.Empty<string>() : (before.shaderKeywords ?? Array.Empty<string>()).ToArray(),
+                        valueShaderKeywords = after == null ? Array.Empty<string>() : (after.shaderKeywords ?? Array.Empty<string>()).ToArray(),
+                        properties = assignmentPropertyChanges,
+                        valueMaterialState = materialState
                     });
                     continue;
                 }
 
                 if (before == null || after == null || !before.hasMaterial) continue;
                 var shaderChanged = before.hasShader != after.hasShader || !SameAsset(before.shader, after.shader);
-                var propertyChanges = DiffMaterialProperties(before.properties, after.properties, out var duplicateProperties);
+                List<MaterialPropertyChange> propertyChanges;
+                List<string> duplicateProperties;
+                if (shaderChanged)
+                {
+                    propertyChanges = new List<MaterialPropertyChange>();
+                    duplicateProperties = new List<string>();
+                }
+                else
+                {
+                    propertyChanges = DiffMaterialProperties(before.properties, after.properties, out duplicateProperties);
+                }
                 foreach (var propertyName in duplicateProperties)
                 {
                     state.manualReview.Add(AvatarRecipeLocalization.Format(

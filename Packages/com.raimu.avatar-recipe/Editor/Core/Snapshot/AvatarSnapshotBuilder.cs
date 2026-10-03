@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using AvatarRecipe.Editor.Core.Models;
 using UnityEditor;
@@ -53,6 +54,7 @@ namespace AvatarRecipe.Editor.Core.Snapshot
 
                 AddBlendShapes(snapshot, transform, path);
                 AddMaterials(snapshot, transform, path);
+                AddModularAvatarComponents(snapshot, avatarRoot, transform, path);
                 transforms.Add(transform);
 
                 for (var index = transform.childCount - 1; index >= 0; index--)
@@ -71,7 +73,167 @@ namespace AvatarRecipe.Editor.Core.Snapshot
                 var componentResult = StringComparer.Ordinal.Compare(left.target.componentId, right.target.componentId);
                 return componentResult != 0 ? componentResult : left.materialIndex.CompareTo(right.materialIndex);
             });
+            snapshot.modularAvatarComponents.Sort((left, right) => StringComparer.Ordinal.Compare(left.key, right.key));
             return snapshot;
+        }
+
+        private static void AddModularAvatarComponents(AvatarSnapshot snapshot, GameObject avatarRoot,
+            Transform transform, string path)
+        {
+            var components = transform.GetComponents<Component>();
+            var sameTypeIndices = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var component in components)
+            {
+                if (component == null) continue;
+                var type = component.GetType();
+                if (!string.Equals(type.Namespace, "nadena.dev.modular_avatar.core", StringComparison.Ordinal) ||
+                    !type.Name.StartsWith("ModularAvatar", StringComparison.Ordinal)) continue;
+
+                var typeName = type.FullName ?? type.Name;
+                sameTypeIndices.TryGetValue(typeName, out var typeIndex);
+                sameTypeIndices[typeName] = typeIndex + 1;
+                var entry = new ModularAvatarComponentSnapshot
+                {
+                    key = path + "|" + typeName + "|" + typeIndex.ToString(CultureInfo.InvariantCulture),
+                    path = path,
+                    hostParentPath = ParentPath(path),
+                    hostSiblingIndex = transform.GetSiblingIndex(),
+                    hostLocalPosition = Normalize(transform.localPosition),
+                    hostLocalRotation = Normalize(transform.localRotation),
+                    hostLocalScale = Normalize(transform.localScale),
+                    hostActive = transform.gameObject.activeSelf,
+                    componentType = typeName,
+                    componentName = type.Name,
+                    enabled = !(component is Behaviour behaviour) || behaviour.enabled
+                };
+                CaptureModularAvatarProperties(entry, avatarRoot, component);
+                snapshot.modularAvatarComponents.Add(entry);
+            }
+        }
+
+        private static string ParentPath(string path)
+        {
+            var separator = (path ?? string.Empty).LastIndexOf('/');
+            return separator < 0 ? string.Empty : path.Substring(0, separator);
+        }
+
+        private static void CaptureModularAvatarProperties(ModularAvatarComponentSnapshot entry, GameObject avatarRoot,
+            Component component)
+        {
+            var serializedObject = new SerializedObject(component);
+            var property = serializedObject.GetIterator();
+            var enterChildren = true;
+            while (property.Next(enterChildren))
+            {
+                enterChildren = property.propertyType == UnityEditor.SerializedPropertyType.Generic;
+                if (property.propertyType == UnityEditor.SerializedPropertyType.Generic ||
+                    !IsUserFacingModularPropertyPath(property.propertyPath))
+                    continue;
+
+                var value = SerializedPropertyValue(property, avatarRoot);
+                if (value == null) continue;
+                entry.properties.Add(new ModularAvatarPropertySnapshot
+                {
+                    path = property.propertyPath,
+                    value = value
+                });
+            }
+            entry.properties.Sort((left, right) => StringComparer.Ordinal.Compare(left.path, right.path));
+        }
+
+        public static bool IsUserFacingModularPropertyPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            var rootPropertyName = path.Split('.')[0];
+            if (rootPropertyName == "m_Script" || rootPropertyName == "m_ObjectHideFlags" ||
+                rootPropertyName == "m_CorrespondingSourceObject" || rootPropertyName == "m_PrefabInstance" ||
+                rootPropertyName == "m_PrefabAsset" || rootPropertyName == "m_GameObject" ||
+                rootPropertyName == "m_Enabled" || rootPropertyName == "m_EditorHideFlags" ||
+                rootPropertyName == "m_Name" || rootPropertyName == "m_EditorClassIdentifier" ||
+                rootPropertyName == "_modularAvatarVersionTag") return false;
+            if (path.EndsWith(".Array.size", StringComparison.Ordinal) ||
+                path.EndsWith(".Object.targetObject", StringComparison.Ordinal) ||
+                path.EndsWith(".m_FileID", StringComparison.Ordinal) ||
+                path.EndsWith(".m_PathID", StringComparison.Ordinal)) return false;
+
+            var arrayElement = path.LastIndexOf(".Array.data[", StringComparison.Ordinal);
+            return arrayElement < 0 || path.IndexOf(']', arrayElement) != path.Length - 1;
+        }
+
+        private static string SerializedPropertyValue(SerializedProperty property, GameObject avatarRoot)
+        {
+            switch (property.propertyType)
+            {
+                case UnityEditor.SerializedPropertyType.Integer:
+                case UnityEditor.SerializedPropertyType.ArraySize:
+                    return property.intValue.ToString(CultureInfo.InvariantCulture);
+                case UnityEditor.SerializedPropertyType.Boolean:
+                    return property.boolValue ? "true" : "false";
+                case UnityEditor.SerializedPropertyType.Float:
+                    return Normalize(property.floatValue).ToString("0.#####", CultureInfo.InvariantCulture);
+                case UnityEditor.SerializedPropertyType.String:
+                    return property.stringValue ?? string.Empty;
+                case UnityEditor.SerializedPropertyType.Enum:
+                    return property.enumValueIndex.ToString(CultureInfo.InvariantCulture) + ":" + property.enumDisplayNames.ElementAtOrDefault(property.enumValueIndex);
+                case UnityEditor.SerializedPropertyType.ObjectReference:
+                    return ObjectReferenceValue(property.objectReferenceValue, avatarRoot);
+                case UnityEditor.SerializedPropertyType.Vector2:
+                    return Vector(property.vector2Value);
+                case UnityEditor.SerializedPropertyType.Vector3:
+                    return Vector(property.vector3Value);
+                case UnityEditor.SerializedPropertyType.Vector4:
+                    return Vector(property.vector4Value);
+                case UnityEditor.SerializedPropertyType.Color:
+                    var color = property.colorValue;
+                    return string.Join(",", new[] { color.r, color.g, color.b, color.a }.Select(value => Normalize(value).ToString("0.#####", CultureInfo.InvariantCulture)));
+                case UnityEditor.SerializedPropertyType.Quaternion:
+                    var rotation = property.quaternionValue;
+                    return string.Join(",", new[] { rotation.x, rotation.y, rotation.z, rotation.w }.Select(value => Normalize(value).ToString("0.#####", CultureInfo.InvariantCulture)));
+                case UnityEditor.SerializedPropertyType.AnimationCurve:
+                    return Curve(property.animationCurveValue);
+                case UnityEditor.SerializedPropertyType.Character:
+                    return ((int)property.intValue).ToString(CultureInfo.InvariantCulture);
+                case UnityEditor.SerializedPropertyType.ManagedReference:
+                    return property.managedReferenceFullTypename ?? string.Empty;
+                default:
+                    return property.propertyType + ":" + property.ToString();
+            }
+        }
+
+        private static string ObjectReferenceValue(UnityEngine.Object value, GameObject avatarRoot)
+        {
+            if (value == null) return "null";
+            if (value is GameObject gameObject && (gameObject == avatarRoot || gameObject.transform.IsChildOf(avatarRoot.transform)))
+                return "avatar:" + GetRelativePath(avatarRoot.transform, gameObject.transform);
+            if (value is Component component && (component.transform == avatarRoot.transform || component.transform.IsChildOf(avatarRoot.transform)))
+                return "avatar:" + GetRelativePath(avatarRoot.transform, component.transform) + "#" + (component.GetType().FullName ?? component.GetType().Name);
+            if (value is Transform transform && (transform == avatarRoot.transform || transform.IsChildOf(avatarRoot.transform)))
+                return "avatar:" + GetRelativePath(avatarRoot.transform, transform);
+
+            var assetPath = AssetDatabase.GetAssetPath(value);
+            if (!string.IsNullOrEmpty(assetPath))
+                return "asset:" + AssetDatabase.AssetPathToGUID(assetPath) + ":" + assetPath.Replace('\\', '/');
+            return "external:" + (value.GetType().FullName ?? value.GetType().Name) + ":" + value.name;
+        }
+
+        private static string GetRelativePath(Transform root, Transform target)
+        {
+            if (root == target) return string.Empty;
+            var segments = new List<string>();
+            for (var current = target; current != null && current != root; current = current.parent)
+                segments.Add(Uri.EscapeDataString(current.name));
+            segments.Reverse();
+            return string.Join("/", segments);
+        }
+
+        private static string Vector(Vector2 value) => string.Join(",", new[] { value.x, value.y }.Select(item => Normalize(item).ToString("0.#####", CultureInfo.InvariantCulture)));
+        private static string Vector(Vector3 value) => string.Join(",", new[] { value.x, value.y, value.z }.Select(item => Normalize(item).ToString("0.#####", CultureInfo.InvariantCulture)));
+        private static string Vector(Vector4 value) => string.Join(",", new[] { value.x, value.y, value.z, value.w }.Select(item => Normalize(item).ToString("0.#####", CultureInfo.InvariantCulture)));
+
+        private static string Curve(AnimationCurve curve)
+        {
+            return string.Join(";", curve.keys.Select(key => string.Join(",", new[] { key.time, key.value, key.inTangent, key.outTangent }
+                .Select(item => Normalize(item).ToString("0.#####", CultureInfo.InvariantCulture)))));
         }
 
         private static void AddPrefabInstances(AvatarSnapshot snapshot, GameObject avatarRoot,

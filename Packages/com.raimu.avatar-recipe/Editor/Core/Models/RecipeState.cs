@@ -6,19 +6,20 @@ namespace AvatarRecipe.Editor.Core.Models
     [Serializable]
     public sealed class RecipeState
     {
-        public const int CurrentSchemaVersion = 2;
+        public const int CurrentSchemaVersion = 5;
 
         public int schemaVersion = CurrentSchemaVersion;
         public List<TransformChange> transformChanges = new List<TransformChange>();
         public List<BlendShapeChange> blendShapeChanges = new List<BlendShapeChange>();
         public List<MaterialChange> materialChanges = new List<MaterialChange>();
         public List<ActiveStateChange> activeStateChanges = new List<ActiveStateChange>();
+        public List<ModularAvatarChange> modularAvatarChanges = new List<ModularAvatarChange>();
         public List<AddedPrefabEntry> addedPrefabs = new List<AddedPrefabEntry>();
         public List<string> manualReview = new List<string>();
 
         public bool IsEmpty => transformChanges.Count == 0 && blendShapeChanges.Count == 0 &&
                                materialChanges.Count == 0 && activeStateChanges.Count == 0 &&
-                               addedPrefabs.Count == 0 && manualReview.Count == 0;
+                               addedPrefabs.Count == 0 && modularAvatarChanges.Count == 0 && manualReview.Count == 0;
     }
 
     [Serializable]
@@ -62,6 +63,46 @@ namespace AvatarRecipe.Editor.Core.Models
         public TargetLocator target;
         public bool baseline;
         public bool value;
+    }
+
+    [Serializable]
+    public sealed class ModularAvatarChange
+    {
+        public string operation;
+        public string path;
+        public bool createHost;
+        public bool hasHostPlacement;
+        public string hostParentPath;
+        public int hostSiblingIndex;
+        public Vector3Value hostLocalPosition;
+        public QuaternionValue hostLocalRotation;
+        public Vector3Value hostLocalScale;
+        public bool hostActive;
+        public string componentType;
+        public string componentName;
+        public string displayName;
+        public string displayType;
+        public bool baselineEnabled;
+        public bool valueEnabled;
+        public List<ModularAvatarPropertyChange> properties = new List<ModularAvatarPropertyChange>();
+        public List<ModularAvatarTarget> targets = new List<ModularAvatarTarget>();
+    }
+
+    [Serializable]
+    public sealed class ModularAvatarTarget
+    {
+        public string path;
+        public bool activeWhenEnabled;
+    }
+
+    [Serializable]
+    public sealed class ModularAvatarPropertyChange
+    {
+        public string path;
+        public bool baselineExists;
+        public string baseline;
+        public bool valueExists;
+        public string value;
     }
 
     [Serializable]
@@ -113,6 +154,7 @@ namespace AvatarRecipe.Editor.Core.Models
         public string[] baselineShaderKeywords = Array.Empty<string>();
         public string[] valueShaderKeywords = Array.Empty<string>();
         public List<MaterialPropertyChange> properties = new List<MaterialPropertyChange>();
+        public List<MaterialPropertySnapshot> valueMaterialState = new List<MaterialPropertySnapshot>();
     }
 
     [Serializable]

@@ -36,6 +36,9 @@ namespace AvatarRecipe.Editor.Apply
         public Material valueMaterial;
         public Shader valueShader;
         public string variantPath;
+        public Transform modularHostParent;
+        public Transform modularHostObject;
+        public List<ModularAvatarChange> modularAvatarChanges;
     }
 
     [Serializable]

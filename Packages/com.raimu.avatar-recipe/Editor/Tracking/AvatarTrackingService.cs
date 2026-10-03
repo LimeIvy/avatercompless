@@ -186,9 +186,12 @@ namespace AvatarRecipe.Editor.Tracking
                     UpgradeLegacyPrefabBaseline(cache);
                 }
 
-                if (cache.snapshot.schemaVersion == 1)
+                if (cache.snapshot.schemaVersion >= 1 && cache.snapshot.schemaVersion <= 3)
                 {
-                    cache.snapshot.materials = new List<MaterialSlotSnapshot>();
+                    if (cache.snapshot.schemaVersion == 1)
+                        cache.snapshot.materials = new List<MaterialSlotSnapshot>();
+                    if (cache.snapshot.schemaVersion <= 2)
+                        cache.snapshot.modularAvatarComponents = new List<ModularAvatarComponentSnapshot>();
                     cache.snapshot.schemaVersion = AvatarSnapshot.CurrentSchemaVersion;
                     WriteBaseline(reference, cache.snapshot, cache.baseAvatar ?? GetBaseAvatarReference(_root));
                 }
@@ -523,6 +526,8 @@ namespace AvatarRecipe.Editor.Tracking
             var statePath = Path.Combine(recipeFolder, "state.json");
             WriteIfChanged(statePath, RecipeFileSerializer.SerializeState(state, baseAvatar));
             WriteIfChanged(Path.Combine(recipeFolder, "recipe.md"), RecipeFileSerializer.SerializeMarkdown(state, baseAvatar));
+            WriteIfChanged(Path.Combine(recipeFolder, "changes.md"), RecipeFileSerializer.SerializeChangesMarkdown(state, baseAvatar));
+            WriteIfChanged(Path.Combine(recipeFolder, "modular-avatar.md"), RecipeFileSerializer.SerializeModularAvatarMarkdown(state));
             var historyPath = Path.Combine(projectFolder, "history.json");
             WriteIfChanged(historyPath, RecipeFileSerializer.AppendHistory(File.Exists(historyPath)
                 ? File.ReadAllText(historyPath, Encoding.UTF8) : string.Empty));
@@ -656,7 +661,14 @@ namespace AvatarRecipe.Editor.Tracking
             {
                 builder.Append(index == 0 ? "\n" : ",\n").Append("    ").Append(Json(warnings[index]));
             }
-            builder.Append(warnings.Count == 0 ? "\n  ],\n  \"changes\": [" : "\n  ],\n  \"changes\": [");
+            builder.Append(warnings.Count == 0 ? "\n  ],\n  \"modularAvatarChanges\": [" : "\n  ],\n  \"modularAvatarChanges\": [");
+            var modularChanges = (state.modularAvatarChanges ?? new List<ModularAvatarChange>())
+                .OrderBy(item => item.path, StringComparer.Ordinal)
+                .ThenBy(item => item.componentType, StringComparer.Ordinal)
+                .ThenBy(item => item.operation, StringComparer.Ordinal).ToList();
+            for (var index = 0; index < modularChanges.Count; index++)
+                builder.Append(index == 0 ? "\n" : ",\n").Append("    ").Append(SerializeModularAvatarChange(modularChanges[index]));
+            builder.Append(modularChanges.Count == 0 ? "\n  ],\n  \"changes\": [" : "\n  ],\n  \"changes\": [");
 
             var changes = new List<string>();
             foreach (var change in state.transformChanges)
@@ -688,6 +700,19 @@ namespace AvatarRecipe.Editor.Tracking
         }
 
         public static string SerializeMarkdown(RecipeState state, BaseAvatarReference avatar)
+        {
+            var builder = new StringBuilder("# ").Append(Markdown(string.IsNullOrEmpty(avatar.name) ? "Avatar" : avatar.name)).Append(" Recipe\n\n")
+                .Append("## Overview\n\n")
+                .Append("- Base Avatar: `").Append(Markdown(avatar.assetPath)).Append("`\n")
+                .Append("- Required Prefabs: ").Append((state.addedPrefabs ?? new List<AddedPrefabEntry>()).Count).Append("\n")
+                .Append("- Standard Changes: ").Append((state.transformChanges?.Count ?? 0) + (state.blendShapeChanges?.Count ?? 0) +
+                    (state.materialChanges?.Count ?? 0) + (state.activeStateChanges?.Count ?? 0)).Append("\n")
+                .Append("- Modular Avatar Changes: ").Append((state.modularAvatarChanges ?? new List<ModularAvatarChange>()).Count).Append("\n\n")
+                .Append("## Details\n\n- [Standard Changes](changes.md)\n- [Modular Avatar](modular-avatar.md)\n");
+            return builder.ToString();
+        }
+
+        public static string SerializeChangesMarkdown(RecipeState state, BaseAvatarReference avatar)
         {
             var builder = new StringBuilder("# Avatar\n\n## Base Avatar\n\n");
             builder.Append("- Prefab: `").Append(Markdown(avatar.assetPath)).Append("`\n");
@@ -746,8 +771,8 @@ namespace AvatarRecipe.Editor.Tracking
                     builder.Append("  - Shader Keywords: `").Append(Markdown(string.Join(", ", change.baselineShaderKeywords ?? Array.Empty<string>()))).Append("` → `")
                         .Append(Markdown(string.Join(", ", change.valueShaderKeywords ?? Array.Empty<string>()))).Append("`\n");
                 foreach (var property in change.properties ?? new List<MaterialPropertyChange>())
-                    builder.Append("  - `").Append(Markdown(property.name)).Append("` (").Append(Markdown(property.type)).Append("): `")
-                        .Append(Markdown(DescribeMaterialProperty(property.baselineExists ? property.baseline : null)))
+                    builder.Append("  - ").Append(Markdown(MaterialPropertyDisplayName(property.name))).Append(": `")
+                        .Append(Markdown(DescribeMaterialProperty(property.name, property.baselineExists ? property.baseline : null)))
                         .Append("` → `").Append(Markdown(DescribeMaterialProperty(property.valueExists ? property.value : null))).Append("`\n");
             }
             builder.Append("\n## Active State Changes\n\n");
@@ -760,11 +785,113 @@ namespace AvatarRecipe.Editor.Tracking
             }
             builder.Append("\n## Warnings / Manual Review\n\n");
             foreach (var warning in (state.manualReview ?? new List<string>()).Distinct(StringComparer.Ordinal)
+                         .Where(item => !item.StartsWith("Modular Avatar changes are recorded", StringComparison.Ordinal))
                          .OrderBy(item => item, StringComparer.Ordinal))
             {
                 builder.Append("- ").Append(Markdown(warning)).Append("\n");
             }
             return builder.ToString();
+        }
+
+        public static string SerializeModularAvatarMarkdown(RecipeState state)
+        {
+            var changes = state.modularAvatarChanges ?? new List<ModularAvatarChange>();
+            var menuChanges = changes.Where(item => item.componentName == "ModularAvatarMenuItem")
+                .GroupBy(item => item.path ?? string.Empty).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var toggleChanges = changes.Where(item => item.componentName == "ModularAvatarObjectToggle")
+                .GroupBy(item => item.path ?? string.Empty).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var menuPaths = menuChanges.Keys.Union(toggleChanges.Keys, StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.Ordinal).ToList();
+            var outfitChanges = changes.Where(item => item.componentName == "ModularAvatarOutfitRoot")
+                .OrderBy(item => item.path, StringComparer.Ordinal).ToList();
+
+            var builder = new StringBuilder("# Menu and Outfit Changes\n\n");
+            if (menuPaths.Count > 0)
+            {
+                builder.Append("## Menus\n\n");
+                foreach (var path in menuPaths)
+                {
+                    menuChanges.TryGetValue(path, out var menu);
+                    toggleChanges.TryGetValue(path, out var toggle);
+                    var entry = menu ?? toggle;
+                    var name = !string.IsNullOrWhiteSpace(entry.displayName) ? entry.displayName : DisplayObjectName(path);
+                    var type = !string.IsNullOrWhiteSpace(entry.displayType) ? entry.displayType : "Toggle";
+                    builder.Append("- ").Append(ModularAvatarOperation(menu == null ? toggle.operation : menu.operation))
+                        .Append(" **").Append(Markdown(type)).Append("** menu: `").Append(Markdown(name)).Append("`\n");
+
+                    var targets = (entry.targets ?? new List<ModularAvatarTarget>())
+                        .OrderBy(item => item.path, StringComparer.Ordinal).ToList();
+                    foreach (var target in targets)
+                        builder.Append("  - Toggle target: `").Append(Markdown(DisplayObjectName(target.path))).Append("` → `")
+                            .Append(target.activeWhenEnabled ? "ON" : "OFF").Append("`\n");
+                }
+                builder.Append("\n");
+            }
+
+            if (outfitChanges.Count > 0)
+            {
+                builder.Append("## Outfits\n\n");
+                foreach (var outfit in outfitChanges)
+                    builder.Append("- ").Append(ModularAvatarOperation(outfit.operation)).Append(" outfit setup: `")
+                        .Append(string.IsNullOrEmpty(outfit.path) ? "Avatar" : Markdown(DisplayObjectName(outfit.path))).Append("`\n");
+            }
+
+            if (menuPaths.Count == 0 && outfitChanges.Count == 0)
+                builder.Append("No menu or outfit changes were recorded.\n");
+            return builder.ToString();
+        }
+
+        private static string SerializeModularAvatarChange(ModularAvatarChange change)
+        {
+            var builder = new StringBuilder("{\"operation\": ").Append(Json(change.operation))
+                .Append(", \"path\": ").Append(Json(change.path))
+                .Append(", \"createHost\": ").Append(change.createHost ? "true" : "false")
+                .Append(", \"hasHostPlacement\": ").Append(change.hasHostPlacement ? "true" : "false")
+                .Append(", \"hostParentPath\": ").Append(Json(change.hostParentPath))
+                .Append(", \"hostSiblingIndex\": ").Append(change.hostSiblingIndex.ToString(CultureInfo.InvariantCulture))
+                .Append(", \"hostLocalPosition\": ").Append(Vector(change.hostLocalPosition))
+                .Append(", \"hostLocalRotation\": ").Append(Quaternion(change.hostLocalRotation))
+                .Append(", \"hostLocalScale\": ").Append(Vector(change.hostLocalScale))
+                .Append(", \"hostActive\": ").Append(change.hostActive ? "true" : "false")
+                .Append(", \"componentType\": ").Append(Json(change.componentType))
+                .Append(", \"componentName\": ").Append(Json(change.componentName))
+                .Append(", \"displayName\": ").Append(Json(change.displayName))
+                .Append(", \"displayType\": ").Append(Json(change.displayType))
+                .Append(", \"baselineEnabled\": ").Append(change.baselineEnabled ? "true" : "false")
+                .Append(", \"valueEnabled\": ").Append(change.valueEnabled ? "true" : "false")
+                .Append(", \"targets\": [");
+            var targets = (change.targets ?? new List<ModularAvatarTarget>()).OrderBy(item => item.path, StringComparer.Ordinal).ToList();
+            for (var index = 0; index < targets.Count; index++)
+            {
+                if (index > 0) builder.Append(", ");
+                builder.Append("{\"path\": ").Append(Json(targets[index].path))
+                    .Append(", \"activeWhenEnabled\": ").Append(targets[index].activeWhenEnabled ? "true" : "false").Append("}");
+            }
+            builder.Append("], \"properties\": [");
+            var properties = (change.properties ?? new List<ModularAvatarPropertyChange>()).OrderBy(item => item.path, StringComparer.Ordinal).ToList();
+            for (var index = 0; index < properties.Count; index++)
+            {
+                var property = properties[index];
+                if (index > 0) builder.Append(", ");
+                builder.Append("{\"path\": ").Append(Json(property.path))
+                    .Append(", \"baselineExists\": ").Append(property.baselineExists ? "true" : "false")
+                    .Append(", \"baseline\": ").Append(Json(property.baseline))
+                    .Append(", \"valueExists\": ").Append(property.valueExists ? "true" : "false")
+                    .Append(", \"value\": ").Append(Json(property.value)).Append("}");
+            }
+            return builder.Append("]}").ToString();
+        }
+
+        private static string ModularAvatarOperation(string operation) => operation == "added" ? "Added" :
+            operation == "removed" ? "Removed" : "Changed";
+
+        private static string DisplayObjectName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "Avatar";
+            var separator = path.LastIndexOf('/');
+            var leaf = separator < 0 ? path : path.Substring(separator + 1);
+            try { return Uri.UnescapeDataString(leaf); }
+            catch (UriFormatException) { return leaf; }
         }
 
         public static string AppendHistory(string existingJson)
@@ -798,6 +925,8 @@ namespace AvatarRecipe.Editor.Tracking
         {
             var properties = (change.properties ?? new List<MaterialPropertyChange>())
                 .OrderBy(item => item.name, StringComparer.Ordinal).ToList();
+            var valueMaterialState = (change.valueMaterialState ?? new List<MaterialPropertySnapshot>())
+                .OrderBy(item => item.name, StringComparer.Ordinal).ToList();
             var builder = new StringBuilder("{\"kind\": \"material\", \"target\": ")
                 .Append(Target(change.target))
                 .Append(", \"materialIndex\": ").Append(change.materialIndex.ToString(CultureInfo.InvariantCulture))
@@ -821,6 +950,12 @@ namespace AvatarRecipe.Editor.Tracking
                     .Append(", \"baseline\": ").Append(MaterialProperty(property.baselineExists ? property.baseline : null))
                     .Append(", \"value\": ").Append(MaterialProperty(property.valueExists ? property.value : null)).Append("}");
             }
+            builder.Append("], \"valueMaterialState\": [");
+            for (var index = 0; index < valueMaterialState.Count; index++)
+            {
+                if (index > 0) builder.Append(", ");
+                builder.Append(MaterialProperty(valueMaterialState[index]));
+            }
             return builder.Append("]}").ToString();
         }
 
@@ -833,7 +968,8 @@ namespace AvatarRecipe.Editor.Tracking
         private static string MaterialProperty(MaterialPropertySnapshot property)
         {
             if (property == null) return "null";
-            var builder = new StringBuilder("{\"type\": ").Append(Json(property.type));
+            var builder = new StringBuilder("{\"name\": ").Append(Json(property.name))
+                .Append(", \"type\": ").Append(Json(property.type));
             if (property.type == "float") builder.Append(", \"float\": ").Append(Number(property.floatValue));
             else if (property.type == "color" || property.type == "vector") builder.Append(", \"vector\": ").Append(Vector(property.vectorValue));
             else if (property.type == "texture") builder.Append(", \"hasTexture\": ").Append(property.hasTexture ? "true" : "false")
@@ -842,12 +978,43 @@ namespace AvatarRecipe.Editor.Tracking
             return builder.Append("}").ToString();
         }
 
-        private static string DescribeMaterialProperty(MaterialPropertySnapshot property)
+        private static string MaterialPropertyDisplayName(string name)
+        {
+            switch (name)
+            {
+                case "_Color": return "Main Color";
+                case "_Color2nd": return "Main Color 2nd";
+                case "_Color3rd": return "Main Color 3rd";
+                case "_UseMain2nd": return "Main Color 2nd Enabled";
+                case "_UseMain3rd": return "Main Color 3rd Enabled";
+                default: return name ?? string.Empty;
+            }
+        }
+
+        private static string DescribeMaterialProperty(MaterialPropertySnapshot property) =>
+            DescribeMaterialProperty(property == null ? string.Empty : property.name, property);
+
+        private static string DescribeMaterialProperty(string name, MaterialPropertySnapshot property)
         {
             if (property == null) return "Not present";
-            if (property.type == "float") return Number(property.floatValue);
-            if (property.type == "color" || property.type == "vector") return Vector(property.vectorValue);
+            if (property.type == "float")
+            {
+                if (name == "_UseMain2nd" || name == "_UseMain3rd") return property.floatValue >= 0.5f ? "ON" : "OFF";
+                return Number(property.floatValue);
+            }
+            if (property.type == "color") return ColorHex(property.vectorValue);
+            if (property.type == "vector") return Vector(property.vectorValue);
             return !property.hasTexture ? "None" : property.texture == null ? "Non-asset Texture" : property.texture.assetPath;
+        }
+
+        private static string ColorHex(Vector4Value color)
+        {
+            var red = Mathf.Clamp(Mathf.RoundToInt(color.x * 255f), 0, 255);
+            var green = Mathf.Clamp(Mathf.RoundToInt(color.y * 255f), 0, 255);
+            var blue = Mathf.Clamp(Mathf.RoundToInt(color.z * 255f), 0, 255);
+            var alpha = Mathf.Clamp(Mathf.RoundToInt(color.w * 255f), 0, 255);
+            return alpha == 255 ? string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", red, green, blue) :
+                string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}{3:X2}", red, green, blue, alpha);
         }
         private static string Vector(Vector3Value value) => "[" + Number(value.x) + ", " + Number(value.y) + ", " + Number(value.z) + "]";
         private static string Vector(Vector4Value value) => "[" + Number(value.x) + ", " + Number(value.y) + ", " + Number(value.z) + ", " + Number(value.w) + "]";

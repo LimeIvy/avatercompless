@@ -70,6 +70,19 @@ namespace AvatarRecipe.Editor.Apply
                 if (warning is string message) state.manualReview.Add(message);
                 else throw new InvalidDataException("Recipe warning at index " + index + " is not a string.");
             }
+            if (document.TryGetValue("modularAvatarChanges", out var modularAvatarValue))
+            {
+                var modularAvatarChanges = modularAvatarValue as List<object> ??
+                    throw new InvalidDataException("Recipe field is not an array: modularAvatarChanges");
+                for (var index = 0; index < modularAvatarChanges.Count; index++)
+                {
+                    try { state.modularAvatarChanges.Add(ReadModularAvatarChange(AsObject(modularAvatarChanges[index], "Modular Avatar change"))); }
+                    catch (Exception exception) when (exception is InvalidDataException || exception is FormatException)
+                    {
+                        throw new InvalidDataException("Invalid Modular Avatar change at index " + index + ": " + exception.Message, exception);
+                    }
+                }
+            }
             var changeValues = Array(document, "changes");
             for (var index = 0; index < changeValues.Count; index++)
             {
@@ -82,6 +95,61 @@ namespace AvatarRecipe.Editor.Apply
 
             Validate(state);
             return new LoadedRecipe { state = state, baseAvatar = baseAvatar };
+        }
+
+        private static ModularAvatarChange ReadModularAvatarChange(Dictionary<string, object> value)
+        {
+            var result = new ModularAvatarChange
+            {
+                operation = String(value, "operation"),
+                path = OptionalString(value, "path"),
+                createHost = OptionalBoolean(value, "createHost"),
+                hasHostPlacement = OptionalBoolean(value, "hasHostPlacement"),
+                hostParentPath = OptionalString(value, "hostParentPath"),
+                hostSiblingIndex = OptionalInteger(value, "hostSiblingIndex"),
+                hostLocalPosition = OptionalVector3(value, "hostLocalPosition"),
+                hostLocalRotation = OptionalQuaternion(value, "hostLocalRotation"),
+                hostLocalScale = OptionalVector3(value, "hostLocalScale"),
+                hostActive = OptionalBoolean(value, "hostActive"),
+                componentType = String(value, "componentType"),
+                componentName = String(value, "componentName"),
+                displayName = OptionalString(value, "displayName"),
+                displayType = OptionalString(value, "displayType"),
+                baselineEnabled = Boolean(value, "baselineEnabled"),
+                valueEnabled = Boolean(value, "valueEnabled")
+            };
+            var properties = Array(value, "properties");
+            foreach (var item in properties)
+            {
+                var property = AsObject(item, "Modular Avatar property change");
+                result.properties.Add(new ModularAvatarPropertyChange
+                {
+                    path = String(property, "path"),
+                    baselineExists = Boolean(property, "baselineExists"),
+                    baseline = OptionalString(property, "baseline"),
+                    valueExists = Boolean(property, "valueExists"),
+                    value = OptionalString(property, "value")
+                });
+            }
+            if (value.TryGetValue("targets", out var targetValue))
+            {
+                var targets = targetValue as List<object> ??
+                    throw new InvalidDataException("Recipe Modular Avatar targets are not an array.");
+                foreach (var item in targets)
+                {
+                    var target = AsObject(item, "Modular Avatar target");
+                    result.targets.Add(new ModularAvatarTarget
+                    {
+                        path = String(target, "path"),
+                        activeWhenEnabled = Boolean(target, "activeWhenEnabled")
+                    });
+                }
+            }
+            if (result.operation != "added" && result.operation != "modified" && result.operation != "removed")
+                throw new InvalidDataException("Recipe contains an unsupported Modular Avatar operation: " + result.operation);
+            if (string.IsNullOrEmpty(result.componentType) || string.IsNullOrEmpty(result.componentName))
+                throw new InvalidDataException("Recipe Modular Avatar component identity is incomplete.");
+            return result;
         }
 
         private static AddedPrefabEntry ReadPrefab(Dictionary<string, object> value)
@@ -165,20 +233,26 @@ namespace AvatarRecipe.Editor.Apply
                 baselineShaderKeywords = StringArray(value, "baselineShaderKeywords"),
                 valueShaderKeywords = StringArray(value, "valueShaderKeywords")
             };
+            foreach (var item in OptionalArray(value, "valueMaterialState"))
+                result.valueMaterialState.Add(ReadMaterialProperty(AsObject(item, "material state property")));
             var properties = Array(value, "properties");
             foreach (var item in properties)
             {
                 var property = AsObject(item, "material property change");
                 var baselineExists = Boolean(property, "baselineExists");
                 var valueExists = Boolean(property, "valueExists");
+                var baselineProperty = baselineExists ? ReadMaterialProperty(Object(property, "baseline")) : null;
+                var valueProperty = valueExists ? ReadMaterialProperty(Object(property, "value")) : null;
+                if (baselineProperty != null && string.IsNullOrEmpty(baselineProperty.name)) baselineProperty.name = String(property, "name");
+                if (valueProperty != null && string.IsNullOrEmpty(valueProperty.name)) valueProperty.name = String(property, "name");
                 result.properties.Add(new MaterialPropertyChange
                 {
                     name = String(property, "name"),
                     type = String(property, "type"),
                     baselineExists = baselineExists,
                     valueExists = valueExists,
-                    baseline = baselineExists ? ReadMaterialProperty(Object(property, "baseline")) : null,
-                    value = valueExists ? ReadMaterialProperty(Object(property, "value")) : null
+                    baseline = baselineProperty,
+                    value = valueProperty
                 });
             }
             return result;
@@ -187,7 +261,7 @@ namespace AvatarRecipe.Editor.Apply
         private static MaterialPropertySnapshot ReadMaterialProperty(Dictionary<string, object> value)
         {
             var type = String(value, "type");
-            var result = new MaterialPropertySnapshot { type = type };
+            var result = new MaterialPropertySnapshot { name = OptionalString(value, "name"), type = type };
             switch (type)
             {
                 case "float": result.floatValue = Number(value, "float"); break;
@@ -271,6 +345,11 @@ namespace AvatarRecipe.Editor.Apply
                         (property.valueExists && !ValidMaterialProperty(property.value)))
                         throw new InvalidDataException("Recipe contains an invalid Material property change.");
                 }
+                var materialStateNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in change.valueMaterialState ?? new List<MaterialPropertySnapshot>())
+                    if (property == null || string.IsNullOrEmpty(property.name) || !materialStateNames.Add(property.name) ||
+                        !ValidMaterialProperty(property))
+                        throw new InvalidDataException("Recipe contains an invalid Material state property.");
             }
             foreach (var prefab in state.addedPrefabs)
                 if (prefab == null || string.IsNullOrEmpty(prefab.id) || string.IsNullOrEmpty(prefab.guid) ||
@@ -294,6 +373,12 @@ namespace AvatarRecipe.Editor.Apply
             return field as List<object> ?? throw new InvalidDataException("Recipe field is not an array: " + key);
         }
 
+        private static List<object> OptionalArray(Dictionary<string, object> value, string key)
+        {
+            if (!value.TryGetValue(key, out var field)) return new List<object>();
+            return field as List<object> ?? throw new InvalidDataException("Recipe field is not an array: " + key);
+        }
+
         private static Dictionary<string, object> AsObject(object value, string name) =>
             value as Dictionary<string, object> ?? throw new InvalidDataException("Recipe contains an invalid " + name + " object.");
 
@@ -303,6 +388,19 @@ namespace AvatarRecipe.Editor.Apply
 
         private static string OptionalString(Dictionary<string, object> value, string key) =>
             value.TryGetValue(key, out var field) && field is string result ? result : string.Empty;
+
+        private static bool OptionalBoolean(Dictionary<string, object> value, string key) =>
+            value.TryGetValue(key, out var field) && field is bool result && result;
+
+        private static int OptionalInteger(Dictionary<string, object> value, string key) =>
+            value.TryGetValue(key, out var field) && field is double number && number >= int.MinValue &&
+            number <= int.MaxValue && Math.Truncate(number) == number ? (int)number : 0;
+
+        private static Vector3Value OptionalVector3(Dictionary<string, object> value, string key) =>
+            value.ContainsKey(key) ? Vector3(value, key) : default(Vector3Value);
+
+        private static QuaternionValue OptionalQuaternion(Dictionary<string, object> value, string key) =>
+            value.ContainsKey(key) ? Quaternion(value, key) : new QuaternionValue(0, 0, 0, 1);
 
         private static int Integer(Dictionary<string, object> value, string key)
         {

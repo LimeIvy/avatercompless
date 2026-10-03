@@ -22,6 +22,7 @@ namespace AvatarRecipe.Editor.UI
         private Vector2 _scrollPosition;
         private string _statusMessage;
         private MessageType _statusType = MessageType.Info;
+        private string _lastLoggedPersistentError;
 
         [MenuItem("Window/Avatar Recipe")]
         private static void Open()
@@ -48,7 +49,9 @@ namespace AvatarRecipe.Editor.UI
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Project Settings"), EditorStyles.boldLabel);
             if (!string.IsNullOrEmpty(AvatarRecipeProjectSettings.LoadError))
             {
-                EditorGUILayout.HelpBox(AvatarRecipeLocalization.Translate(AvatarRecipeProjectSettings.LoadError), MessageType.Error);
+                var message = AvatarRecipeLocalization.Translate(AvatarRecipeProjectSettings.LoadError);
+                LogPersistentError(message);
+                EditorGUILayout.HelpBox(message, MessageType.Error);
                 EditorGUILayout.EndScrollView();
                 return;
             }
@@ -90,7 +93,7 @@ namespace AvatarRecipe.Editor.UI
         private void DrawCompatibilityPreview()
         {
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Import Recipe"), EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Select a target Avatar and a Recipe state.json. Review the compatibility and planned changes before applying; building this preview does not modify the scene."), MessageType.None);
+            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Import Recipe short help"), MessageType.None);
             EditorGUI.BeginChangeCheck();
             _previewTarget = (GameObject)EditorGUILayout.ObjectField(AvatarRecipeLocalization.Get("Target Avatar"), _previewTarget, typeof(GameObject), true);
             if (EditorGUI.EndChangeCheck()) _previewPlan = null;
@@ -169,6 +172,7 @@ namespace AvatarRecipe.Editor.UI
                 {
                     _statusMessage = AvatarRecipeLocalization.Get("Apply is blocked. Resolve all missing or ambiguous items, then build a new preview.");
                     _statusType = MessageType.Error;
+                    LogError(_statusMessage);
                     return;
                 }
 
@@ -212,6 +216,7 @@ namespace AvatarRecipe.Editor.UI
         private void DrawScan()
         {
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Create Recipe (Scan Changes)"), EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Scan Recipe short help"), MessageType.None);
             _modifiedAvatar = (GameObject)EditorGUILayout.ObjectField(AvatarRecipeLocalization.Get("Modified Avatar"), _modifiedAvatar,
                 typeof(GameObject), true);
             _originalAvatarPrefab = (GameObject)EditorGUILayout.ObjectField(AvatarRecipeLocalization.Get("Original Avatar Prefab"),
@@ -247,13 +252,13 @@ namespace AvatarRecipe.Editor.UI
                 }
             }
 
-            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Compare the modified Avatar with its original Prefab to create a Recipe from the differences, then continue tracking. Save the scene to write the Recipe."),
-                MessageType.None);
+            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Scan Material short help"), MessageType.Info);
         }
 
         private void DrawRecipeRoot()
         {
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Recipe Root"), EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Recipe Root short help"), MessageType.None);
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUI.BeginChangeCheck();
@@ -271,7 +276,9 @@ namespace AvatarRecipe.Editor.UI
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Project Folder"), AvatarRecipeProjectSettings.GetRecipeProjectDirectory());
             if (!Directory.Exists(AvatarRecipeProjectSettings.RecipeRoot))
             {
-                EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Recipe Root was not found. Choose an available folder."), MessageType.Error);
+                var message = AvatarRecipeLocalization.Get("Recipe Root was not found. Choose an available folder.");
+                LogPersistentError(message);
+                EditorGUILayout.HelpBox(message, MessageType.Error);
             }
             else if (GUILayout.Button(AvatarRecipeLocalization.Get("Create project.json")))
             {
@@ -283,6 +290,7 @@ namespace AvatarRecipe.Editor.UI
         private void DrawTracking()
         {
             EditorGUILayout.LabelField(AvatarRecipeLocalization.Get("Create Recipe (Track Avatar)"), EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Track Recipe short help"), MessageType.None);
             var trackedReference = AvatarRecipeProjectSettings.TrackedAvatar;
             if (AvatarTrackingService.IsTracking)
             {
@@ -294,7 +302,9 @@ namespace AvatarRecipe.Editor.UI
                 }
                 if (!string.IsNullOrEmpty(AvatarTrackingService.Error))
                 {
-                    EditorGUILayout.HelpBox(AvatarRecipeLocalization.Translate(AvatarTrackingService.Error), MessageType.Error);
+                    var message = AvatarRecipeLocalization.Translate(AvatarTrackingService.Error);
+                    LogPersistentError(message);
+                    EditorGUILayout.HelpBox(message, MessageType.Error);
                 }
                 else
                 {
@@ -352,8 +362,6 @@ namespace AvatarRecipe.Editor.UI
                     }
                 }
             }
-
-            EditorGUILayout.HelpBox(AvatarRecipeLocalization.Get("Start tracking an Avatar Root to record supported changes from its current state. Save the scene to create or update the Recipe files."), MessageType.None);
         }
 
         private void ChooseRecipeRoot()
@@ -380,6 +388,19 @@ namespace AvatarRecipe.Editor.UI
         {
             _statusMessage = AvatarRecipeLocalization.Translate(exception.Message);
             _statusType = MessageType.Error;
+            LogError(_statusMessage);
+        }
+
+        private void LogError(string message)
+        {
+            if (!string.IsNullOrEmpty(message)) Debug.LogError(message, this);
+        }
+
+        private void LogPersistentError(string message)
+        {
+            if (string.IsNullOrEmpty(message) || string.Equals(_lastLoggedPersistentError, message, StringComparison.Ordinal)) return;
+            _lastLoggedPersistentError = message;
+            LogError(message);
         }
     }
 }

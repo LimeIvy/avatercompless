@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using AvatarRecipe.Editor.Core.Models;
@@ -79,6 +80,7 @@ namespace AvatarRecipe.Editor.Apply
             var activeStates = new List<PreparedActive>();
             var blendShapes = new List<PreparedBlendShape>();
             var materials = new List<PreparedMaterial>();
+            var modularOperations = new List<PlannedOperation>();
 
             if (!skipAllBaseOperations)
             {
@@ -137,6 +139,27 @@ namespace AvatarRecipe.Editor.Apply
                         variantPath = operation.variantPath
                     });
                 }
+                foreach (var operation in plan.operations.Where(item => item.modularAvatarChanges != null))
+                {
+                    if (skipConflicts && conflicts.Contains(operation.changeKey)) { result.skippedConflicts++; continue; }
+                    var representative = operation.modularAvatarChanges.FirstOrDefault();
+                    if (representative == null || !representative.hasHostPlacement) throw ChangedTarget(operation.targetPath);
+                    var parent = ApplyPlanner.ResolvePath(target.transform, representative.hostParentPath, out var ambiguous);
+                    var resolvedHost = ApplyPlanner.ResolvePath(target.transform, representative.path, out var hostAmbiguous);
+                    if (parent == null || ambiguous || parent != operation.modularHostParent || hostAmbiguous ||
+                        (representative.createHost && resolvedHost != null) ||
+                        (!representative.createHost && (resolvedHost == null || resolvedHost != operation.modularHostObject)))
+                        throw ChangedTarget(operation.targetPath);
+                    foreach (var change in operation.modularAvatarChanges)
+                    {
+                        if (ResolveModularType(change.componentType) == null) throw ChangedTarget(change.componentType);
+                        if (change.componentName == "ModularAvatarObjectToggle")
+                            foreach (var toggleTarget in change.targets ?? new List<ModularAvatarTarget>())
+                                if (ApplyPlanner.ResolvePath(target.transform, toggleTarget.path, out ambiguous) == null || ambiguous)
+                                    throw ChangedTarget(toggleTarget.path);
+                    }
+                    modularOperations.Add(operation);
+                }
             }
             else
             {
@@ -192,7 +215,9 @@ namespace AvatarRecipe.Editor.Apply
                 {
                     var material = item.valueMaterial;
                     if (!string.IsNullOrEmpty(item.variantPath))
-                        material = CreateOrLoadMaterialVariant(item);
+                        material = RequiresImportedMaterialCopy(item.change)
+                            ? CreateOrLoadImportedMaterial(item)
+                            : CreateOrLoadMaterialVariant(item);
                     var slots = item.renderer.sharedMaterials;
                     Undo.RecordObject(item.renderer, "Apply Avatar Recipe");
                     slots[item.change.materialIndex] = material;
@@ -200,10 +225,13 @@ namespace AvatarRecipe.Editor.Apply
                     PrefabUtility.RecordPrefabInstancePropertyModifications(item.renderer);
                 }
 
+                foreach (var operation in modularOperations)
+                    ApplyModularAvatarMenu(operation, target.transform, target.scene);
+
                 ValidateResults(prefabs, createdPrefabs, transforms, activeStates, blendShapes, materials);
                 EditorSceneManager.MarkSceneDirty(target.scene);
                 Undo.CollapseUndoOperations(undoGroup);
-                result.appliedOperations = prefabs.Count + transforms.Count + activeStates.Count + blendShapes.Count + materials.Count;
+                result.appliedOperations = prefabs.Count + transforms.Count + activeStates.Count + blendShapes.Count + materials.Count + modularOperations.Count;
                 return result;
             }
             catch (Exception exception)
@@ -211,6 +239,158 @@ namespace AvatarRecipe.Editor.Apply
                 Undo.RevertAllDownToGroup(undoGroup);
                 throw new InvalidOperationException("Apply failed. The scene changes were reverted: " + exception.Message, exception);
             }
+        }
+
+        private static void ApplyModularAvatarMenu(PlannedOperation operation, Transform avatar, UnityEngine.SceneManagement.Scene scene)
+        {
+            var changes = operation.modularAvatarChanges;
+            var hostChange = changes[0];
+            GameObject host;
+            if (hostChange.createHost)
+            {
+                host = new GameObject(Leaf(hostChange.path));
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(host, scene);
+                Undo.RegisterCreatedObjectUndo(host, "Apply Avatar Recipe");
+                Undo.SetTransformParent(host.transform, operation.modularHostParent, false, "Apply Avatar Recipe");
+                host.transform.localPosition = ToUnity(hostChange.hostLocalPosition);
+                host.transform.localRotation = ToUnity(hostChange.hostLocalRotation);
+                host.transform.localScale = ToUnity(hostChange.hostLocalScale);
+                host.transform.SetSiblingIndex(Mathf.Clamp(hostChange.hostSiblingIndex, 0, operation.modularHostParent.childCount - 1));
+                host.SetActive(hostChange.hostActive);
+            }
+            else
+            {
+                host = operation.modularHostObject.gameObject;
+            }
+
+            foreach (var change in changes.OrderBy(item => ComponentOrder(item.componentName)))
+            {
+                var type = ResolveModularType(change.componentType);
+                if (type == null) throw new InvalidOperationException("Modular Avatar component is unavailable: " + change.componentType);
+                var component = Undo.AddComponent(host, type);
+                if (component == null) throw new InvalidOperationException("Could not add Modular Avatar component: " + change.componentType);
+                Undo.RecordObject(component, "Apply Avatar Recipe");
+                ApplyModularProperties(component, change, avatar);
+                if (component is Behaviour behaviour) behaviour.enabled = change.valueEnabled;
+            }
+            ValidateModularAvatarMenu(operation, host, avatar);
+        }
+
+        private static void ValidateModularAvatarMenu(PlannedOperation operation, GameObject host, Transform avatar)
+        {
+            var change = operation.modularAvatarChanges[0];
+            if (host == null || host.name != Leaf(change.path) || (change.createHost &&
+                (host.transform.parent != operation.modularHostParent ||
+                 !Approximately(host.transform.localPosition, change.hostLocalPosition) ||
+                 !Approximately(host.transform.localRotation, change.hostLocalRotation) ||
+                 !Approximately(host.transform.localScale, change.hostLocalScale) || host.activeSelf != change.hostActive)))
+                throw new InvalidOperationException("Final Modular Avatar menu host validation failed: " + change.path);
+
+            foreach (var item in operation.modularAvatarChanges)
+            {
+                var type = ResolveModularType(item.componentType);
+                var component = type == null ? null : host.GetComponent(type);
+                if (component == null || (component is Behaviour behaviour && behaviour.enabled != item.valueEnabled))
+                    throw new InvalidOperationException("Final Modular Avatar component validation failed: " + item.componentType);
+                if (item.componentName != "ModularAvatarObjectToggle") continue;
+                var serialized = new SerializedObject(component);
+                var objects = serialized.FindProperty("m_objects");
+                if (objects == null || objects.arraySize != (item.targets ?? new List<ModularAvatarTarget>()).Count)
+                    throw new InvalidOperationException("Final Modular Avatar toggle list validation failed: " + item.path);
+                for (var index = 0; index < objects.arraySize; index++)
+                {
+                    var expected = ApplyPlanner.ResolvePath(avatar, item.targets[index].path, out var ambiguous);
+                    var targetObject = objects.GetArrayElementAtIndex(index).FindPropertyRelative("Object.targetObject");
+                    if (expected == null || ambiguous || targetObject == null || targetObject.objectReferenceValue != expected.gameObject)
+                        throw new InvalidOperationException("Final Modular Avatar toggle target validation failed: " + item.targets[index].path);
+                }
+            }
+        }
+
+        private static int ComponentOrder(string name) => name == "ModularAvatarMenuInstaller" ? 0 :
+            name == "ModularAvatarMenuItem" ? 1 : name == "ModularAvatarObjectToggle" ? 2 : 3;
+
+        private static void ApplyModularProperties(Component component, ModularAvatarChange change, Transform avatar)
+        {
+            var serialized = new SerializedObject(component);
+            if (change.componentName == "ModularAvatarObjectToggle")
+            {
+                var objectList = serialized.FindProperty("m_objects");
+                if (objectList == null || !objectList.isArray) throw new InvalidOperationException("Modular Avatar Object Toggle list is unavailable.");
+                objectList.arraySize = (change.targets ?? new List<ModularAvatarTarget>()).Count;
+            }
+            foreach (var item in change.properties ?? new List<ModularAvatarPropertyChange>())
+            {
+                if (!item.valueExists) throw new InvalidOperationException("Removing Modular Avatar properties is unsupported: " + item.path);
+                var property = serialized.FindProperty(item.path);
+                if (property == null) throw new InvalidOperationException("Modular Avatar property is unavailable: " + item.path);
+                switch (property.propertyType)
+                {
+                    case SerializedPropertyType.String:
+                        property.stringValue = item.value ?? string.Empty;
+                        break;
+                    case SerializedPropertyType.Boolean:
+                        if (!bool.TryParse(item.value, out var boolean)) throw new InvalidOperationException("Invalid Modular Avatar boolean: " + item.path);
+                        property.boolValue = boolean;
+                        break;
+                    case SerializedPropertyType.Enum:
+                        var colon = (item.value ?? string.Empty).IndexOf(':');
+                        var enumText = colon < 0 ? item.value : item.value.Substring(0, colon);
+                        if (!int.TryParse(enumText, out var enumIndex) || enumIndex < 0 || enumIndex >= property.enumNames.Length)
+                            throw new InvalidOperationException("Invalid Modular Avatar enum: " + item.path);
+                        property.enumValueIndex = enumIndex;
+                        break;
+                    case SerializedPropertyType.Integer:
+                        if (!int.TryParse(item.value, out var integer)) throw new InvalidOperationException("Invalid Modular Avatar integer: " + item.path);
+                        property.intValue = integer;
+                        break;
+                    case SerializedPropertyType.Float:
+                        if (!float.TryParse(item.value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ||
+                            float.IsNaN(number) || float.IsInfinity(number))
+                            throw new InvalidOperationException("Invalid Modular Avatar number: " + item.path);
+                        property.floatValue = number;
+                        break;
+                    case SerializedPropertyType.ObjectReference:
+                        if (item.value != "null") throw new InvalidOperationException("Recipe contains a non-null Modular Avatar asset reference: " + item.path);
+                        property.objectReferenceValue = null;
+                        break;
+                    default:
+                        throw new InvalidOperationException("Unsupported Modular Avatar property type at " + item.path + ": " + property.propertyType);
+                }
+            }
+
+            if (change.componentName == "ModularAvatarObjectToggle")
+            {
+                var objects = serialized.FindProperty("m_objects");
+                if (objects == null || !objects.isArray) throw new InvalidOperationException("Modular Avatar Object Toggle list is unavailable.");
+                var targets = change.targets ?? new List<ModularAvatarTarget>();
+                for (var index = 0; index < targets.Count; index++)
+                {
+                    var target = ApplyPlanner.ResolvePath(avatar, targets[index].path, out var ambiguous);
+                    if (target == null || ambiguous) throw ChangedTarget(targets[index].path);
+                    var element = objects.GetArrayElementAtIndex(index);
+                    var targetObject = element.FindPropertyRelative("Object.targetObject");
+                    if (targetObject != null) targetObject.objectReferenceValue = target.gameObject;
+                }
+            }
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(component);
+        }
+
+        private static Type ResolveModularType(string fullName)
+        {
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                var type = assembly.GetType(fullName, false);
+                if (type != null && typeof(Component).IsAssignableFrom(type)) return type;
+            }
+            return null;
+        }
+
+        private static string Leaf(string path)
+        {
+            var separator = (path ?? string.Empty).LastIndexOf('/');
+            return Uri.UnescapeDataString(separator < 0 ? path ?? string.Empty : path.Substring(separator + 1));
         }
 
         private static bool IsManualReviewPrefab(LoadedRecipe recipe, AddedPrefabEntry prefab, ApplyPlan plan)
@@ -255,7 +435,12 @@ namespace AvatarRecipe.Editor.Apply
             if (AssetDatabase.LoadMainAssetAtPath(item.variantPath) != null)
                 throw new InvalidOperationException("Generated material path is already occupied: " + item.variantPath);
 
-            var source = item.renderer.sharedMaterials[item.change.materialIndex];
+            // Copy the Recipe's final source Material so untouched settings (including later LilToon layers)
+            // do not leak in from a different target Avatar's Material.
+            var source = item.valueMaterial;
+            if (source == null && item.change.valueMaterial != null)
+                source = LoadMaterial(item.change.valueMaterial.guid, item.change.valueMaterial.assetPath);
+            if (source == null) source = item.renderer.sharedMaterials[item.change.materialIndex];
             if (source == null) source = item.change.baselineMaterial == null ? null :
                 LoadMaterial(item.change.baselineMaterial.guid, item.change.baselineMaterial.assetPath);
             if (source == null) throw new InvalidOperationException("Could not load the baseline Material for a Recipe variant.");
@@ -273,6 +458,39 @@ namespace AvatarRecipe.Editor.Apply
             AssetDatabase.CreateAsset(clone, item.variantPath);
             AssetDatabase.ImportAsset(item.variantPath);
             return AssetDatabase.LoadAssetAtPath<Material>(item.variantPath);
+        }
+
+        private static Material CreateOrLoadImportedMaterial(PreparedMaterial item)
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<Material>(item.variantPath);
+            if (existing != null)
+            {
+                if (!MatchesImportedMaterial(existing, item.change))
+                    throw new InvalidOperationException("Generated Material already exists with different contents: " + item.variantPath);
+                return existing;
+            }
+            if (AssetDatabase.LoadMainAssetAtPath(item.variantPath) != null)
+                throw new InvalidOperationException("Generated Material path is already occupied: " + item.variantPath);
+            if (item.valueShader == null)
+                throw new InvalidOperationException("Could not resolve the Shader for the new Material.");
+
+            var clone = new Material(item.valueShader)
+            {
+                name = item.change.valueMaterial == null ? Path.GetFileNameWithoutExtension(item.variantPath) : item.change.valueMaterial.name
+            };
+            foreach (var property in item.change.valueMaterialState ?? new List<MaterialPropertySnapshot>())
+                ApplyMaterialProperty(clone, property.name, property);
+            clone.renderQueue = item.change.valueRenderQueue;
+            clone.shaderKeywords = item.change.valueShaderKeywords ?? Array.Empty<string>();
+
+            var folder = Path.GetDirectoryName(item.variantPath).Replace('\\', '/');
+            EnsureAssetFolder(folder);
+            AssetDatabase.CreateAsset(clone, item.variantPath);
+            AssetDatabase.ImportAsset(item.variantPath);
+            var result = AssetDatabase.LoadAssetAtPath<Material>(item.variantPath);
+            if (result == null || !MatchesImportedMaterial(result, item.change))
+                throw new InvalidOperationException("Generated Material failed validation: " + item.variantPath);
+            return result;
         }
 
         private static void EnsureAssetFolder(string path)
@@ -301,6 +519,8 @@ namespace AvatarRecipe.Editor.Apply
                 case "texture":
                     var texture = !value.hasTexture || value.texture == null ? null : AssetDatabase.LoadAssetAtPath<Texture>(AssetDatabase.GUIDToAssetPath(value.texture.guid));
                     if (texture == null && value.texture != null) texture = AssetDatabase.LoadAssetAtPath<Texture>(value.texture.assetPath);
+                    if (value.hasTexture && texture == null)
+                        throw new InvalidOperationException("Could not resolve Material texture: " + (value.texture == null ? name : value.texture.assetPath));
                     material.SetTexture(name, texture);
                     material.SetTextureScale(name, new Vector2(value.textureScale.x, value.textureScale.y));
                     material.SetTextureOffset(name, new Vector2(value.textureOffset.x, value.textureOffset.y));
@@ -352,6 +572,67 @@ namespace AvatarRecipe.Editor.Apply
                 }
             }
             return true;
+        }
+
+        private static bool MatchesImportedMaterial(Material material, MaterialChange change)
+        {
+            if (material == null || itemShaderMismatch(material, change) ||
+                material.renderQueue != change.valueRenderQueue ||
+                !(material.shaderKeywords ?? Array.Empty<string>()).OrderBy(item => item, StringComparer.Ordinal)
+                    .SequenceEqual((change.valueShaderKeywords ?? Array.Empty<string>()).OrderBy(item => item, StringComparer.Ordinal), StringComparer.Ordinal)) return false;
+            foreach (var expected in change.valueMaterialState ?? new List<MaterialPropertySnapshot>())
+            {
+                if (expected == null || !material.HasProperty(expected.name)) return false;
+                switch (expected.type)
+                {
+                    case "float":
+                        if (Mathf.Abs(material.GetFloat(expected.name) - expected.floatValue) > Tolerance) return false;
+                        break;
+                    case "color":
+                    case "vector":
+                        if (!Approximately(material.GetVector(expected.name), expected.vectorValue)) return false;
+                        break;
+                    case "texture":
+                        var texture = material.GetTexture(expected.name);
+                        if ((texture != null) != expected.hasTexture) return false;
+                        if (expected.texture != null && !MatchesAsset(texture, expected.texture)) return false;
+                        var scale = material.GetTextureScale(expected.name);
+                        var offset = material.GetTextureOffset(expected.name);
+                        if (Mathf.Abs(scale.x - expected.textureScale.x) > Tolerance || Mathf.Abs(scale.y - expected.textureScale.y) > Tolerance ||
+                            Mathf.Abs(offset.x - expected.textureOffset.x) > Tolerance || Mathf.Abs(offset.y - expected.textureOffset.y) > Tolerance) return false;
+                        break;
+                    default: return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool itemShaderMismatch(Material material, MaterialChange change)
+        {
+            if (change.valueShader == null) return material.shader == null;
+            var shaderPath = AssetDatabase.GetAssetPath(material.shader);
+            var shaderGuid = string.IsNullOrEmpty(shaderPath) ? string.Empty : AssetDatabase.AssetPathToGUID(shaderPath);
+            return material.shader == null || shaderGuid != change.valueShader.guid &&
+                   !string.Equals(shaderPath, change.valueShader.assetPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesAsset(UnityEngine.Object asset, AssetReference reference)
+        {
+            if (asset == null || reference == null) return asset == null && reference == null;
+            var path = AssetDatabase.GetAssetPath(asset);
+            var guid = string.IsNullOrEmpty(path) ? string.Empty : AssetDatabase.AssetPathToGUID(path);
+            return !string.IsNullOrEmpty(reference.guid) && guid == reference.guid ||
+                   !string.IsNullOrEmpty(reference.assetPath) && string.Equals(path, reference.assetPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool RequiresImportedMaterialCopy(MaterialChange change)
+        {
+            if (change == null || change.valueMaterial == null ||
+                (change.valueMaterialState == null || change.valueMaterialState.Count == 0)) return false;
+            if (change.baselineMaterial == null) return true;
+            if (!string.IsNullOrEmpty(change.baselineMaterial.guid) && !string.IsNullOrEmpty(change.valueMaterial.guid))
+                return !string.Equals(change.baselineMaterial.guid, change.valueMaterial.guid, StringComparison.Ordinal);
+            return !string.Equals(change.baselineMaterial.assetPath, change.valueMaterial.assetPath, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void ValidateResults(List<PreparedPrefab> prefabs, List<GameObject> instances,

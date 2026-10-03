@@ -6,7 +6,7 @@ namespace AvatarRecipe.Editor.Core.Models
     [Serializable]
     public sealed class AvatarSnapshot
     {
-        public const int CurrentSchemaVersion = 2;
+        public const int CurrentSchemaVersion = 4;
 
         public int schemaVersion = CurrentSchemaVersion;
         public List<TransformSnapshot> transforms = new List<TransformSnapshot>();
@@ -14,6 +14,7 @@ namespace AvatarRecipe.Editor.Core.Models
         public List<MaterialSlotSnapshot> materials = new List<MaterialSlotSnapshot>();
         public List<ActiveSnapshot> activeStates = new List<ActiveSnapshot>();
         public List<AddedPrefabSnapshot> addedPrefabs = new List<AddedPrefabSnapshot>();
+        public List<ModularAvatarComponentSnapshot> modularAvatarComponents = new List<ModularAvatarComponentSnapshot>();
     }
 
     [Serializable]
@@ -53,6 +54,30 @@ namespace AvatarRecipe.Editor.Core.Models
         public Vector3Value localPosition;
         public QuaternionValue localRotation;
         public Vector3Value localScale;
+    }
+
+    [Serializable]
+    public sealed class ModularAvatarComponentSnapshot
+    {
+        public string key;
+        public string path;
+        public string hostParentPath;
+        public int hostSiblingIndex;
+        public Vector3Value hostLocalPosition;
+        public QuaternionValue hostLocalRotation;
+        public Vector3Value hostLocalScale;
+        public bool hostActive;
+        public string componentType;
+        public string componentName;
+        public bool enabled;
+        public List<ModularAvatarPropertySnapshot> properties = new List<ModularAvatarPropertySnapshot>();
+    }
+
+    [Serializable]
+    public sealed class ModularAvatarPropertySnapshot
+    {
+        public string path;
+        public string value;
     }
 
     [Serializable]

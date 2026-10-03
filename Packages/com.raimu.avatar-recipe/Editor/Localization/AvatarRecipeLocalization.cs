@@ -15,6 +15,13 @@ namespace AvatarRecipe.Editor.Localization
         {
             ["Language"] = new[] { "Language", "言語", "语言", "언어" },
             ["Import Recipe"] = new[] { "Import Recipe", "レシピをインポート", "导入Recipe", "Recipe 가져오기" },
+            ["Import Recipe short help"] = new[]
+            {
+                "Apply a saved Recipe to another Avatar. Review the changes before applying.",
+                "保存したRecipeを別のアバターに反映します。適用前に変更内容を確認できます。",
+                "将已保存的Recipe应用到其他Avatar。应用前可先检查更改内容。",
+                "저장된 Recipe를 다른 아바타에 적용합니다. 적용 전에 변경 내용을 확인할 수 있습니다."
+            },
             ["Select a target Avatar and a Recipe state.json. Review the compatibility and planned changes before applying; building this preview does not modify the scene."] = new[]
             {
                 "Select a target Avatar and a Recipe state.json. Review the compatibility and planned changes before applying; building this preview does not modify the scene.",
@@ -25,6 +32,13 @@ namespace AvatarRecipe.Editor.Localization
             ["Review Apply Plan"] = new[] { "Review Apply Plan", "適用内容を確認", "检查应用内容", "적용 내용 확인" },
             ["Apply Plan"] = new[] { "Apply Plan", "適用予定の内容", "计划应用内容", "적용 계획" },
             ["Create Recipe (Track Avatar)"] = new[] { "Create Recipe (Track Avatar)", "レシピを作成（アバターを追跡）", "创建Recipe（跟踪Avatar）", "Recipe 만들기(아바타 추적)" },
+            ["Track Recipe short help"] = new[]
+            {
+                "Record changes as you edit an Avatar. Save the scene to update its Recipe.",
+                "アバターの編集を記録します。シーンを保存するとRecipeが更新されます。",
+                "记录Avatar的编辑。保存场景后更新Recipe。",
+                "아바타 편집 내용을 기록합니다. 씬을 저장하면 Recipe가 업데이트됩니다."
+            },
             ["Start tracking an Avatar Root to record supported changes from its current state. Save the scene to create or update the Recipe files."] = new[]
             {
                 "Start tracking an Avatar Root to record supported changes from its current state. Save the scene to create or update the Recipe files.",
@@ -33,6 +47,20 @@ namespace AvatarRecipe.Editor.Localization
                 "아바타 루트를 선택해 추적을 시작하면 현재 상태를 기준으로 지원되는 변경 사항을 기록합니다. 씬을 저장하면 Recipe 파일을 만들거나 업데이트합니다."
             },
             ["Create Recipe (Scan Changes)"] = new[] { "Create Recipe (Scan Changes)", "レシピを作成（変更をスキャン）", "创建Recipe（扫描更改）", "Recipe 만들기(변경 사항 스캔)" },
+            ["Scan Recipe short help"] = new[]
+            {
+                "Compare an edited Avatar with its original Prefab to record existing changes.",
+                "変更済みアバターを元Prefabと比較し、すでにある変更を記録します。",
+                "将已修改的Avatar与原始预制件比较，记录已有更改。",
+                "수정된 아바타를 원본 프리팹과 비교해 기존 변경 사항을 기록합니다."
+            },
+            ["If both Avatars reference the same Material asset, edits made to that asset before Scan are already visible from the original Prefab. Scan cannot recover the old values. For Scan, duplicate the original Material, assign the copy to the modified Avatar, then edit it. Otherwise, start Tracking before editing."] = new[]
+            {
+                "Scan cannot detect edits made to a Material shared with the original Prefab. Duplicate it before editing.",
+                "元Prefabと共有中のマテリアル編集は検出できません。複製してから編集してください。",
+                "无法检测原Prefab共用材质的编辑。请先复制材质再修改。",
+                "원본 프리팹과 공유 중인 머티리얼의 편집은 감지할 수 없습니다. 복제한 뒤 수정하세요."
+            },
             ["Compare the modified Avatar with its original Prefab to create a Recipe from the differences, then continue tracking. Save the scene to write the Recipe."] = new[]
             {
                 "Compare the modified Avatar with its original Prefab to create a Recipe from the differences, then continue tracking. Save the scene to write the Recipe.",
@@ -75,6 +103,20 @@ namespace AvatarRecipe.Editor.Localization
             ["Render Queue: {0} → {1}"] = new[] { "Render Queue: {0} → {1}", "Render Queue: {0} → {1}", "渲染队列：{0} → {1}", "렌더 큐: {0} → {1}" },
             ["Shader Keywords: {0} → {1}"] = new[] { "Shader Keywords: {0} → {1}", "シェーダーキーワード: {0} → {1}", "着色器关键字：{0} → {1}", "셰이더 키워드: {0} → {1}" },
             ["Avatar-specific Material will be generated"] = new[] { "Avatar-specific Material will be generated", "アバター専用マテリアルを生成します", "将生成Avatar专用材质", "아바타 전용 머티리얼을 생성합니다" },
+            ["Full Recipe Material state will replace the target slot using an Avatar-specific copy"] = new[]
+            {
+                "Full Recipe Material state will replace the target slot using an Avatar-specific copy",
+                "RecipeのMaterial全体をアバター専用コピーとして対象スロットに上書きします",
+                "将Recipe的完整材质状态复制为Avatar专用材质并覆盖目标槽位",
+                "Recipe의 전체 머티리얼 상태를 아바타 전용 복사본으로 만들어 대상 슬롯에 덮어씁니다"
+            },
+            ["A same-named Material copy will be created in the Avatar Recipe Materials folder"] = new[]
+            {
+                "A same-named Material copy will be created in the Avatar Recipe Materials folder",
+                "同じ名前のMaterialをAvatar Recipe専用フォルダーに作成します",
+                "将在Avatar Recipe专用文件夹中创建同名材质",
+                "Avatar Recipe 전용 폴더에 같은 이름의 머티리얼을 만듭니다"
+            },
             ["Material is not a persistent project asset and cannot be restored automatically: {0}"] = new[]
             {
                 "Material is not a persistent project asset and cannot be restored automatically: {0}", "マテリアルが永続アセットではないため自動復元できません: {0}",
@@ -144,6 +186,13 @@ namespace AvatarRecipe.Editor.Localization
             ["Project ID"] = new[] { "Project ID", "プロジェクトID", "项目ID", "프로젝트 ID" },
             ["Unity Project"] = new[] { "Unity Project", "Unityプロジェクト", "Unity项目", "Unity 프로젝트" },
             ["Recipe Root"] = new[] { "Recipe Root", "Recipe保存先", "Recipe根目录", "Recipe 루트" },
+            ["Recipe Root short help"] = new[]
+            {
+                "Choose where this tool saves Recipe files.",
+                "Recipeファイルの保存先を選びます。",
+                "选择此工具保存Recipe文件的位置。",
+                "이 도구의 Recipe 파일 저장 위치를 선택합니다."
+            },
             ["Browse"] = new[] { "Browse", "参照", "浏览", "찾아보기" },
             ["Project Folder"] = new[] { "Project Folder", "プロジェクトフォルダー", "项目文件夹", "프로젝트 폴더" },
             ["Create project.json"] = new[] { "Create project.json", "project.jsonを作成", "创建project.json", "project.json 만들기" },
@@ -244,6 +293,64 @@ namespace AvatarRecipe.Editor.Localization
             ["Transform"] = new[] { "Transform", "Transform", "Transform", "Transform" },
             ["Active State"] = new[] { "Active State", "有効状態", "启用状态", "활성 상태" },
             ["BlendShape"] = new[] { "BlendShape", "BlendShape", "BlendShape", "BlendShape" },
+            ["Modular Avatar"] = new[] { "Modular Avatar", "Modular Avatar", "Modular Avatar", "Modular Avatar" },
+            ["Modular Avatar Menu"] = new[] { "Modular Avatar Menu", "Modular Avatarメニュー", "Modular Avatar菜单", "Modular Avatar 메뉴" },
+            ["Modular Avatar Menu Parent"] = new[] { "Modular Avatar Menu Parent", "Modular Avatarメニューの親", "Modular Avatar菜单父对象", "Modular Avatar 메뉴 부모" },
+            ["Modular Avatar Menu Host"] = new[] { "Modular Avatar Menu Host", "Modular Avatarメニューの配置先", "Modular Avatar菜单节点", "Modular Avatar 메뉴 오브젝트" },
+            ["Modular Avatar Component"] = new[] { "Modular Avatar Component", "Modular Avatarコンポーネント", "Modular Avatar组件", "Modular Avatar 컴포넌트" },
+            ["Modular Avatar Reference"] = new[] { "Modular Avatar Reference", "Modular Avatar参照", "Modular Avatar引用", "Modular Avatar 참조" },
+            ["Toggle Target"] = new[] { "Toggle Target", "Toggleの対象", "Toggle目标", "Toggle 대상" },
+            ["Recipe does not include the menu host placement; rescan and save the source Avatar before importing."] = new[]
+            {
+                "Recipe does not include the menu host placement; rescan and save the source Avatar before importing.",
+                "Recipeにメニュー配置先の情報がありません。インポート前に元Avatarを再スキャンして保存してください。",
+                "Recipe缺少菜单节点的位置。请重新扫描并保存源Avatar后再导入。",
+                "Recipe에 메뉴 오브젝트 위치 정보가 없습니다. 가져오기 전에 원본 Avatar를 다시 스캔하고 저장하세요."
+            },
+            ["This Modular Avatar component is not part of a supported menu toggle setup: {0}"] = new[]
+            {
+                "This Modular Avatar component is not part of a supported menu toggle setup: {0}",
+                "このModular Avatarコンポーネントは対応するメニューToggle構成に含まれません: {0}",
+                "此Modular Avatar组件不属于当前支持的菜单Toggle配置：{0}",
+                "이 Modular Avatar 컴포넌트는 지원되는 메뉴 Toggle 구성에 포함되지 않습니다: {0}"
+            },
+            ["This Modular Avatar component requires manual review: {0}"] = new[]
+            {
+                "This Modular Avatar component requires manual review: {0}", "このModular Avatarコンポーネントは手動確認が必要です: {0}",
+                "此Modular Avatar组件需要手动检查：{0}", "이 Modular Avatar 컴포넌트는 수동 검토가 필요합니다: {0}"
+            },
+            ["Menu host name already exists at {0}; rename or remove it before importing."] = new[]
+            {
+                "Menu host name already exists at {0}; rename or remove it before importing.", "メニューの配置先名が既に存在します: {0}。名前を変更するか削除してから取り込んでください。",
+                "菜单节点名称已存在：{0}。请重命名或删除后再导入。", "메뉴 오브젝트 이름이 이미 있습니다: {0}. 이름을 바꾸거나 삭제한 뒤 가져오세요."
+            },
+            ["This menu uses a reference that cannot be restored automatically: {0}"] = new[]
+            {
+                "This menu uses a reference that cannot be restored automatically: {0}", "このメニューには自動復元できない参照があります: {0}",
+                "此菜单包含无法自动还原的引用：{0}", "이 메뉴에는 자동으로 복원할 수 없는 참조가 있습니다: {0}"
+            },
+            ["Target already has one of the menu components at {0}."] = new[]
+            {
+                "Target already has one of the menu components at {0}.", "対象には既にメニューコンポーネントがあります: {0}",
+                "目标节点已包含菜单组件：{0}", "대상에 메뉴 컴포넌트가 이미 있습니다: {0}"
+            },
+            ["Menu host and toggle targets found at {0}"] = new[]
+            {
+                "Menu host and toggle targets found at {0}", "メニュー配置先とToggle対象を確認しました: {0}",
+                "已找到菜单节点和Toggle目标：{0}", "메뉴 오브젝트와 Toggle 대상을 찾았습니다: {0}"
+            },
+            ["{0} menu ({1}); toggle {2} target(s)"] = new[]
+            {
+                "{0} menu ({1}); toggle {2} target(s)", "{0}メニュー（{1}）、Toggle対象{2}個",
+                "{0}菜单（{1}），Toggle目标{2}个", "{0} 메뉴({1}), Toggle 대상 {2}개"
+            },
+            ["Changed or removed Modular Avatar components require manual review: {0} at {1}"] = new[]
+            {
+                "Changed or removed Modular Avatar components require manual review: {0} at {1}",
+                "変更・削除されたModular Avatarコンポーネントは手動確認が必要です: {0}（{1}）",
+                "变更或移除的Modular Avatar组件需要手动检查：{0}（{1}）",
+                "변경되거나 제거된 Modular Avatar 컴포넌트는 수동 검토가 필요합니다: {0} ({1})"
+            },
             ["BlendShape Renderer"] = new[] { "BlendShape Renderer", "BlendShape Renderer", "BlendShape渲染器", "BlendShape 렌더러" },
             ["Manual Review"] = new[] { "Manual Review", "手動確認", "手动检查", "수동 검토" },
             ["Found"] = new[] { "Found", "検出", "已找到", "찾음" },
